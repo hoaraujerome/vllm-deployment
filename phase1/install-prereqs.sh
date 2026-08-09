@@ -85,8 +85,8 @@ verify_curl() {
 }
 
 print_next_steps() {
-  local script_dir
-  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  local phase1_dir
+  phase1_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
   section "Next steps"
   cat <<EOF
@@ -96,11 +96,11 @@ Prerequisites are ready. Install vLLM-Metal:
 
 Then serve locally (uses loopback — safe with Tailscale):
 
-  ${script_dir}/serve-local.sh
+  ${phase1_dir}/serve-local.sh
 
 Or with another mlx-community model:
 
-  ${script_dir}/serve-local.sh mlx-community/Qwen2.5-0.5B-Instruct-4bit
+  ${phase1_dir}/serve-local.sh mlx-community/Qwen2.5-0.5B-Instruct-4bit
 EOF
 }
 

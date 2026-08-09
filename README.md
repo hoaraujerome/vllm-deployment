@@ -1,103 +1,63 @@
 # vLLM deployment
 
-Hands-on project to run [vLLM](https://docs.vllm.ai/) locally, then deploy it on Kubernetes.
+Hands-on project to run [vLLM](https://docs.vllm.ai/) locally, then deploy it on Kubernetes — including bootstrapping the cluster from greenfield code.
 
-## What is vLLM?
+## Project phases
 
-vLLM is a **high-throughput LLM inference server** — not a model. It loads model weights, accepts prompts via an API, runs token generation on GPU (or CPU), and returns structured output (typically JSON over an OpenAI-compatible HTTP API).
+| Phase | Goal | Status | Location |
+| ----- | ---- | ------ | -------- |
+| **1 — Local** | vLLM-Metal on Apple Silicon | Done | [`phase1/`](phase1/) |
+| **2 — Cluster** | kubeadm cluster on AWS (EICE, kubectl on node) | Planned | [`phase2/`](phase2/) |
+| **3 — WireGuard** | VPN access — laptop kubectl replaces EICE | Planned | [`phase3/`](phase3/) |
+| **4 — vLLM deploy** | vLLM CPU; in-cluster API works | Planned | [`phase4/`](phase4/) |
+| **5 — GPU** | NVIDIA/CUDA | Planned | TBD |
+| **6 — Operate** | Expose externally; metrics | Planned | TBD |
 
 ```text
-Prompt → vLLM (loads weights, runs inference) → JSON response
+Phase 1        Phase 2           Phase 3          Phase 4         Phase 5        Phase 6
+(local)        (cluster)         (WireGuard)      (vLLM)          (GPU)          (operate)
 ```
 
-This repo focuses on **online serving** (`vllm serve`), the long-lived HTTP server pattern used in production and on Kubernetes.
+Reference architecture: `~/DEV/k8s-homelab` — greenfield code in this repo.
 
-## Project status
+---
 
-| Phase | Goal | Status |
-| ----- | ---- | ------ |
-| **1 — Local** | Run vLLM on Apple Silicon with a small MLX model | Done |
-| **2 — Kubernetes** | Deploy vLLM with NVIDIA/CUDA and GPU resources | Planned |
-| **3 — Operate** | Expose the API, capture latency and GPU metrics | Planned |
+## Phase 1 — Local (done)
 
-Phase 1 uses **[vLLM-Metal](https://github.com/vllm-project/vllm-metal)** (Metal + MLX) on an M1/M2/M3 Mac. Phase 2 will use the standard NVIDIA/CUDA path on Kubernetes — same vLLM concepts (`vllm serve`, OpenAI API), different runtime.
+See [`phase1/README.md`](phase1/README.md).
 
-## Prerequisites
+---
 
-- Apple Silicon Mac (arm64)
-- macOS with [Homebrew](https://brew.sh/)
-- [Xcode Command Line Tools](https://developer.apple.com/xcode/resources/) (required for Metal compilation)
-- [uv](https://docs.astral.sh/uv/) (Python package manager)
+## Phase 2 — Kubernetes cluster (planned)
 
-Run the helper script to verify and install what is missing:
+See [`phase2/README.md`](phase2/README.md). Done when `phase2-check.sh` exits 0. Ops: **kubectl on node** via EICE. Tooling: **devbox** in `phase2/` (homelab pattern).
 
-```bash
-./install-prereqs.sh
-```
+---
 
-This script does **not** install vLLM itself — it prepares the host for the upstream vLLM-Metal installer.
+## Phase 3 — WireGuard (planned)
 
-## Install vLLM-Metal
+See [`phase3/README.md`](phase3/README.md). Done when `phase3-check.sh` exits 0 — **kubectl from laptop** over VPN.
 
-After prerequisites are ready:
+---
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/vllm-project/vllm-metal/main/install.sh | bash
-```
+## Phase 4 — vLLM on Kubernetes (planned)
 
-This creates a virtualenv at `~/.venv-vllm-metal` with vLLM-Metal and its dependencies.
+See [`phase4/README.md`](phase4/README.md). Helm + `phase4-check.sh` from laptop (WireGuard).
 
-## Serve locally
-
-Start the OpenAI-compatible API server on loopback (avoids Tailscale/CGNAT address issues with torch distributed):
-
-```bash
-./serve-local.sh
-```
-
-Default model: `mlx-community/Qwen2.5-0.5B-Instruct-4bit` (small, fast to load on Apple Silicon).
-
-Serve a different MLX model:
-
-```bash
-./serve-local.sh mlx-community/Qwen2.5-0.5B-Instruct-4bit
-```
-
-Override the venv path:
-
-```bash
-VLLM_METAL_VENV=~/.venv-vllm-metal ./serve-local.sh
-```
-
-## Test the API
-
-Once the server is listening on port 8000:
-
-```bash
-curl http://127.0.0.1:8000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "mlx-community/Qwen2.5-0.5B-Instruct-4bit",
-    "messages": [{"role": "user", "content": "Hello"}],
-    "max_tokens": 50
-  }'
-```
+---
 
 ## Repository layout
 
 ```text
 vllm-deployment/
-├── install-prereqs.sh   # Phase 1 host prerequisites (Homebrew, uv, Xcode CLT)
-├── serve-local.sh       # Start vLLM-Metal with loopback networking
-└── README.md
+├── phase1/          # local vLLM-Metal
+├── phase2/          # cluster factory (TF, Packer, kubeadm)
+├── phase3/          # WireGuard access
+└── phase4/          # vLLM workload (Helm, phase4-check.sh)
 ```
 
 ## Design notes
 
-- **GPU path on Mac:** vLLM-Metal, not CPU-from-source or NVIDIA CUDA (unavailable on Apple Silicon).
-- **No Devbox wrapper:** vLLM-Metal's `install.sh` is the source of truth for the local runtime; revisit if this becomes a shared team repo.
-- **Loopback binding:** `serve-local.sh` sets `VLLM_HOST_IP`, `MASTER_ADDR`, and `GLOO_SOCKET_IFNAME=lo0` so the API server stays on localhost even when Tailscale is active.
-
-## Next: Kubernetes (Phase 2)
-
-Target: deploy vLLM with a CUDA-compatible model on a GPU-backed cluster, reachable in-cluster via ClusterIP. Packaging will likely be Helm; validation will be an executable check script (lint → deploy → in-cluster `/v1/chat/completions`).
+- **Phase 2 ops:** kubectl on node only (homelab smoke-test style).
+- **Phase 3:** WireGuard unlocks laptop-native Helm/kubectl for Phase 4+.
+- **Validation-driven:** each phase completes when its check script passes.
