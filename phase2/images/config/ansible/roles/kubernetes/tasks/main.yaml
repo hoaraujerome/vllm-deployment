@@ -29,6 +29,7 @@
   loop: "{{ kubernetes_packages }}"
 
 - name: Disable kubelet until kubeadm init (first boot)
+  # kubeadm-init.sh re-enables kubelet after init; early-exit path re-enables on reboot.
   ansible.builtin.systemd:
     name: kubelet
     enabled: false

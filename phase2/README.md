@@ -5,7 +5,7 @@
 
 **Prerequisite:** [Phase 1](../phase1/README.md) (optional — no hard dependency)
 
-**Repo:** `~/DEV/vllm-deployment/phase2` — Terraform, Ansible/Packer, devbox, `phase2-check.sh`, `cluster.sh`
+**Repo:** `~/DEV/vllm-deployment/phase2` — Terraform, Ansible/Packer, devbox, **`Makefile`**, validation ladder
 
 **Reference architecture (inspirational, not a fork):** `~/DEV/k8s-homelab` — TF + Packer/Ansible AMI + kubeadm + Cilium on AWS.
 
@@ -13,7 +13,7 @@
 
 ## Done when
 
-`./scripts/phase2-check.sh` exits 0 — a functional Kubernetes cluster on AWS with all nodes Ready and a smoke pod running.
+`make check` exits 0 — a functional Kubernetes cluster on AWS with all nodes Ready and a smoke pod running.
 
 ---
 
@@ -91,12 +91,17 @@ Scope:    no vLLM, no GPU, no ingress
 - **CNI:** **Cilium 1.20.0** + **cilium-cli v0.19.7** — [stable requirements](https://docs.cilium.io/en/stable/network/kubernetes/requirements/) list K8s 1.36; homelab uses 1.17.4 on K8s 1.32 — do not copy that pin
 - **Kubernetes version:** **1.36.3** — pin in one variable (`group_vars` / `kubeadm-config`); validate with `kubectl version` in ladder
 - **Terraform — shared modules:** `modules/infra/` — reusable child modules (VPC, subnets, etc.); **no backend/state**; consumed by both live roots below; **each child module has `versions.tf`** with the same provider pins as live roots
-- **Terraform — AWS provider:** **`hashicorp/aws` `~> 6.60.0`** on every live root and every `modules/infra/*/` child module (homelab uses `~> 5.86.0` — do not copy); keep pins identical so `setup-images plan` module validation does not pull a different provider
-- **Terraform — cluster live:** `provisioning/envs/dev/` — root module for VPC, private subnet, NAT, EICE, EC2, SGs (separate state from AMI build)
+- **Terraform — variables:** **`nullable = false`** on every `variable` (live roots + `modules/infra/*/` + `cluster/infra/modules/*/`); variables with `default` still set `nullable = false`
+- **Terraform — AWS provider:** **`hashicorp/aws` `~> 6.60.0`** on every live root and every `modules/infra/*/` child module (homelab uses `~> 5.86.0` — do not copy); keep pins identical so `make images-infra-plan` module validation does not pull a different provider
+- **Terraform — cluster live:** `cluster/infra/main-account/ca-central-1/prod/` — root module for VPC, private subnet, NAT, EICE, EC2, SGs (separate state from AMI build)
 - **Terraform — AMI live:** `images/infra/main-account/ca-central-1/prod/` — ephemeral VPC/subnet for Packer builder ([Gruntwork infrastructure-live](https://docs.gruntwork.io/2.0/docs/overview/concepts/infrastructure-live/) pattern, homelab-aligned); **destroy after** `packer build`
 - **Packer + Ansible (AMI bake):** `images/config/` — `packer/` + `ansible/ami.yaml` + roles; packages **and** bootstrap machinery (not runtime playbooks from your laptop)
 - **Bootstrap (Loop 2):** **homelab first-boot** — baked into the AMI, not Ansible under `configuration/` after Terraform
-- **AMI orchestrator:** **`images/setup-images.sh`** — single entry point (`plan` | `deploy` | `build` | `destroy`); gate 3a runs `deploy` (fmt + validate + trivy + TF plan + apply)
+- **Orchestration (Loop 2):** **`phase2/Makefile`** is the **only** human and automation entrypoint for infra (`make help`). Layering:
+  - **`make check`** → `scripts/phase2-check.sh` (validation ladder)
+  - **`phase2-check.sh`** → **`make` targets only** — never call `images/setup-images.sh` or `cluster/setup-cluster.sh` directly
+  - **Makefile recipes** → `setup-images.sh` / `setup-cluster.sh` (implementation detail)
+  - **Flags** (`SKIP_*`, `RUN_*`) are set on the **`make`** command line; Makefile `export`s them to check script and setup scripts (`make check SKIP_TF_APPLY=1`)
 - **No vLLM / no GPU** in Phase 2 — cluster factory only
 
 
@@ -130,7 +135,12 @@ templates: kubeadm-init.sh,                                          kubeadm-ini
   kubeadm-init.service,                                                → kubeadm init
   cloud-init 99_k8s.cfg                                               → cilium install
                                                                       → remove CP taint (single node)
+                                                                      → systemctl enable kubelet
 ```
+
+**Kubelet on reboot:** the AMI bake **disables** kubelet so it cannot start before `kubeadm init`. After init (and on every later boot via the script’s early-exit path), **`kubeadm-init.sh` enables kubelet** so the node rejoins the cluster after reboot. Gate 6 asserts `systemctl is-enabled kubelet`.
+
+**Existing nodes** baked before this fix: one-time repair over EICE — `sudo systemctl enable --now kubelet`, or `sudo systemctl start kubeadm-init.service` after deploying an AMI that includes the updated script.
 
 | Piece | Baked where (Ansible `kubernetes` role) | Runs when |
 | ----- | ---------------------------------------- | --------- |
@@ -143,7 +153,7 @@ templates: kubeadm-init.sh,                                          kubeadm-ini
 
 **`configuration/`** is not the bootstrap path for Phase 2. Validation gate **Bootstrap** means the first-boot service succeeded and the cluster is up (checked via EICE/`kubectl` on the node), not "ansible-playbook under `configuration/`".
 
-Reject and restart Loop 1 when the agent proposes shortcuts that violate these (e.g. K8s version hardcoded in five files, copy k8s-homelab wholesale, homelab Ubuntu 24.04 base AMI, homelab AWS provider 5.86 pin, child module without `versions.tf`, mismatched provider pins across modules/live, KTHW-style manual PKI, bastion when homelab uses EICE, public K8s node, bundle vLLM into AMI playbooks, merge `images/infra` state with `provisioning/`, flat `images/infra/envs/dev/` instead of `main-account/ca-central-1/prod/`, duplicate modules under `provisioning/modules/` instead of shared `modules/infra/`, **runtime Ansible bootstrap under `configuration/` instead of AMI first-boot**).
+Reject and restart Loop 1 when the agent proposes shortcuts that violate these (e.g. K8s version hardcoded in five files, copy k8s-homelab wholesale, homelab Ubuntu 24.04 base AMI, homelab AWS provider 5.86 pin, child module without `versions.tf`, mismatched provider pins across modules/live, **Terraform `variable` without `nullable = false`**, KTHW-style manual PKI, bastion when homelab uses EICE, public K8s node, **kubelet left disabled after bootstrap**, bundle vLLM into AMI playbooks, merge `images/infra` state with `cluster/infra`, flat `images/infra/envs/dev/` instead of `main-account/ca-central-1/prod/`, duplicate network modules under `cluster/infra/modules/` instead of shared `modules/infra/`, **runtime Ansible bootstrap under `configuration/` instead of AMI first-boot**, **`phase2-check.sh` calling `setup-images.sh` or `setup-cluster.sh` directly instead of `make` targets**, bypassing the Makefile for infra gates).
 
 ### Terraform layout (Loop 2)
 
@@ -152,7 +162,7 @@ Gruntwork-style **modules vs live**, simplified for one sandbox account. Inspire
 | Purpose | Path | State |
 | ------- | ---- | ----- |
 | Shared infra modules (blueprints) | `modules/infra/` | none |
-| Cluster live | `provisioning/envs/dev/` | persistent while cluster exists |
+| Cluster live | `cluster/infra/main-account/ca-central-1/prod/` | persistent while cluster exists |
 | Packer builder live | `images/infra/main-account/ca-central-1/prod/` | **ephemeral** — apply → build → destroy |
 | AMI bake | `images/config/packer/` + `images/config/ansible/` | n/a |
 
@@ -175,22 +185,51 @@ terraform {
 
 Commit `.terraform.lock.hcl` per live root after `terraform init` (Loop 1); modules use the same constraint but do not commit lock files.
 
-**AMI build flow** (orchestrated by `images/setup-images.sh`):
+**Child module files (Loop 2)** — under `modules/infra/*/` and `cluster/infra/modules/*/`:
+
+| File | Purpose |
+| ---- | ------- |
+| `main.tf` | Resources, module calls, locals, data sources |
+| `variables.tf` | Input variables |
+| `outputs.tf` | Outputs |
+| `versions.tf` | `required_version` and `required_providers` |
+| `README.md` | Module description (Requirements, Inputs, Outputs, Resources) |
+
+Live roots use `main.*.tf`, `variables.tf`, `outputs.tf`, `provider.tf`, `versions.tf`, `locals.tf` — not a single catch-all `main.tf` for everything.
+
+#### Variables
+
+Every `variable` in live roots and child modules:
+
+- Set **`nullable = false`** on all variables, including those with a **`default`** (defaults express optional *values*, not nullability).
+- Attribute order: `description`, `type`, `default` (if any), `nullable`, `validation` (if any).
+- Do not use `nullable = true` or optional blocks whose presence means “feature on/off”; use a nested object with **`enabled = bool`** when a capability is opt-in (defer until needed in Phase 2).
+
+```hcl
+variable "instance_type" {
+  description = "EC2 instance type."
+  type        = string
+  default     = "t4g.small"
+  nullable    = false
+}
+```
+
+**AMI build flow** (orchestrated by **`make`** → `images/setup-images.sh`):
 
 ```text
-./images/setup-images.sh plan     # fmt, validate, trivy, terraform plan (no apply)
-./images/setup-images.sh deploy   # gate 3a — plan + terraform apply (builder VPC/subnet)
-./images/setup-images.sh build    # deploy + packer build → gate 3b (AMI in AWS)
-./images/setup-images.sh destroy  # target: tear down builder infra (defer during early dev)
+make images-infra-plan      # fmt, validate, trivy, terraform plan (no apply)
+make images-infra-deploy    # gate 3a — plan + terraform apply (builder VPC/subnet)
+make images-config-build    # deploy + packer build → gate 3b (AMI in AWS)
+make images-infra-destroy   # tear down builder infra (defer during early dev)
 ```
 
 ---
 
 
 
-## Validation ladder — `phase2-check.sh` (the real work)
+## Validation ladder — `make check` (the real work)
 
-Define `./scripts/phase2-check.sh` **before** heavy infra work.
+Define `./scripts/phase2-check.sh` **before** heavy infra work. Run it only via **`make check`** so skip/run flags export correctly.
 
 
 | Gate         | Check                                    | Proves                          |
@@ -198,21 +237,34 @@ Define `./scripts/phase2-check.sh` **before** heavy infra work.
 | Devbox       | pinned toolchain versions                | dev environment matches Loop 2  |
 | Ansible syntax | `ansible-playbook --syntax-check -i "default," ami.yaml` (from `images/config/ansible/`) | AMI playbook and roles parse |
 | Ansible lint | `ansible-lint ami.yaml` (from `images/config/ansible/`) | AMI roles follow ansible-lint rules |
-| TF static    | `terraform fmt -check`, `validate`       | cluster HCL is sane             |
-| TF plan      | `terraform plan`                         | cluster AWS shape is coherent   |
-| AMI apply (3a) | `./images/setup-images.sh deploy`      | builder infra applied           |
-| AMI artifact (3b) | base AMI in AWS (`describe-images`) | node image ready                |
-| Provision    | `terraform apply`                        | EC2 / network / EICE exist      |
-| Bootstrap (5) | first boot: `kubeadm-init.service` → node Ready (EICE `kubectl get nodes`) | cluster initialized |
-| Cluster (6)   | `kubectl get nodes` → Ready        | schedulable cluster        |
-| Smoke (7)     | test pod (e.g. nginx) Ready        | workload path works        |
+| TF static + plan (2–3) | `make cluster-infra-plan` (or `cluster-infra-validate` when `SKIP_TF_PLAN=1`) | cluster HCL sane; AWS shape coherent |
+| AMI apply (3a) | `make images-infra-deploy`      | builder infra applied           |
+| AMI artifact (3b) | base AMI in AWS (`describe-images`; or `make images-config-build` when `RUN_PACKER_BUILD=1`) | node image ready                |
+| Provision (4) | `make cluster-infra-deploy` (only when `RUN_CLUSTER_APPLY=1`) | EC2 / network / EICE exist      |
+| EICE SSH (5) | SSH to node via `aws ec2-instance-connect` / open-tunnel (devbox shell) | private node reachable |
+| Bootstrap (6) | `kubeadm-init.service` Result=success, journal `Bootstrap complete`, `kubelet` enabled (polls via EICE) | first-boot finished + reboot-safe |
+| Cluster (7)   | `kubectl` on node: 1 node Ready, all pods Running/Ready (polls via EICE) | schedulable cluster |
+| Smoke (8)     | nginx deployment `phase2-smoke-nginx` Ready 1/1 with pod IP (EICE kubectl on node) | workload path works |
 
-Skip Ansible syntax only: `SKIP_AMI_ANSIBLE_SYNTAX=1 ./scripts/phase2-check.sh`
+Skip flags: `make help` lists all `SKIP_*` / `RUN_*` variables.
 
-Skip Ansible lint only: `SKIP_AMI_ANSIBLE_LINT=1 ./scripts/phase2-check.sh`
+Skip Ansible syntax only: `make check SKIP_AMI_ANSIBLE_SYNTAX=1`
+
+Skip Ansible lint only: `make check SKIP_AMI_ANSIBLE_LINT=1`
+
+Gate 4 runs `make cluster-infra-deploy` only with `RUN_CLUSTER_APPLY=1`. Skip it with `SKIP_TF_APPLY=1`. Gate 5 (EICE SSH) runs when cluster outputs exist. Skip bootstrap/cluster/smoke (gates 6–8) with `SKIP_ANSIBLE=1` — ladder exits successfully after gate 5:
+
+```bash
+make check RUN_CLUSTER_APPLY=1
+make check RUN_CLUSTER_APPLY=1 SKIP_ANSIBLE=1
+make check SKIP_TF_APPLY=1 SKIP_ANSIBLE=1
+make help    # all targets and flags
+```
+
+Skip cluster TF during AMI-only iteration: `make check SKIP_CLUSTER_TF=1`
 
 
-**Done when:** `./scripts/phase2-check.sh` exits 0.
+**Done when:** `make check` exits 0.
 
 ---
 
@@ -225,7 +277,7 @@ Goal + constraints + repo state
         ↓
 Agent edits TF / Packer / Ansible
         ↓
-Run phase2-check.sh
+Run make check
         ↓
 All gates pass? ──Yes──→ Phase 2 done
         │
@@ -237,7 +289,7 @@ Prompt shape for Cursor:
 ```text
 Goal: functional single-node kubeadm cluster on AWS (ca-central-1).
 Constraints: 1 private node (CP + worker), t4g.small, EICE access, kubeadm built-in PKI, Cilium, AMI first-boot bootstrap (cloud-init + systemd), devbox shell, greenfield — inspired by ~/DEV/k8s-homelab, no copy.
-Validation: ./scripts/phase2-check.sh must exit 0.
+Validation: make check must exit 0.
 Current failure: <paste stderr>
 Fix only what the checks require.
 ```
@@ -302,20 +354,24 @@ KTHW (`kubernetes-the-hard-way-on-aws`) is a **different** project — manual co
 
 ```text
 phase2/
+├── Makefile                                     # primary entrypoint (make check, make *-infra-*)
 ├── devbox.json
 ├── modules/infra/                               # shared TF child modules (no state)
-├── provisioning/
-│   └── envs/dev/                                # cluster live root
+├── cluster/
+│   ├── setup-cluster.sh                         # invoked by Makefile only
+│   └── infra/
+│       ├── main-account/ca-central-1/prod/      # cluster live root
+│       └── modules/                             # cluster-specific TF modules
 ├── images/
-│   ├── setup-images.sh                        # AMI orchestrator: plan | deploy | build | destroy
+│   ├── setup-images.sh                          # invoked by Makefile only
 │   ├── infra/main-account/ca-central-1/prod/    # ephemeral live — Packer builder network
 │   └── config/
 │       ├── packer/
 │       └── ansible/                             # ami.yaml + roles (Packer bake + first-boot wiring)
 ├── configuration/                             # not used for Phase 2 bootstrap (defer / other uses)
 └── scripts/
-    ├── phase2-check.sh
-    └── cluster.sh
+    ├── phase2-check.sh                          # ladder; calls make targets only
+    └── cluster.sh                               # thin wrapper → make
 ```
 
 ---
@@ -324,15 +380,15 @@ phase2/
 
 ## Checklist (implementation tasks)
 
-- [ ] Write validation ladder script with gates above
+- [ ] `Makefile` + validation ladder wired (`make check`; check script uses `make` targets only)
 - [ ] Scaffold `modules/infra/` (shared child modules — VPC, etc.)
-- [ ] Scaffold `provisioning/envs/dev/` (cluster live — VPC, NAT, EICE, EC2)
+- [ ] Scaffold `cluster/infra/main-account/ca-central-1/prod/` (cluster live — VPC, NAT, EICE, EC2)
 - [ ] Scaffold `images/infra/main-account/ca-central-1/prod/` (ephemeral Packer builder network)
 - [ ] Scaffold `images/config/packer/` + `images/config/ansible/` (`ami.yaml` + roles)
 - [ ] Pin versions in `group_vars/all.yaml`; template kubeadm config + bootstrap script from vars
 - [ ] Packer + Ansible: base AMI (containerd, kubeadm, Cilium CLI) **+ kubeadm-init.sh, systemd unit, cloud-init**
-- [ ] Single-node bootstrap in baked script: `kubeadm init`, `cilium install`, remove CP taint
-- [ ] `cluster.sh` orchestrator wired (provision only — bootstrap is first boot, not a configure step)
+- [ ] Single-node bootstrap in baked script: `kubeadm init`, `cilium install`, remove CP taint, `systemctl enable kubelet`
+- [ ] `cluster.sh` thin wrapper → `make` (bootstrap is first boot, not a configure step)
 - [ ] Ladder green: node Ready, smoke pod Running (kubectl **on node** via EICE)
 
 ---
@@ -354,10 +410,11 @@ phase2/
 - **SSM bootstrap coordination:** **not used in Phase 2** — homelab uses SSM for CP/worker join across two nodes; single-node MVP has no join path. Revisit if topology splits CP + workers.
 - **kubectl / kubeconfig:** **on the node only** (homelab smoke-test style) — SSH via EICE, `KUBECONFIG=/etc/kubernetes/admin.conf` on the node; laptop kubeconfig deferred to [Phase 3](../phase3/README.md)
 - **K8s upgrade path:** **rebuild AMI** at new version → **rolling replace** nodes (workers first, CP last) — not in-place `kubeadm upgrade` playbooks. Phase 2 bootstraps **one** node; expect **multi-node** topology by first real upgrade.
-- **Packer build infra:** ephemeral — **`images/setup-images.sh`** orchestrates builder live; **`destroy`** after first AMI is stable (defer during early dev)
-- **AMI orchestrator:** `images/setup-images.sh` — gate 3a = `deploy` (fmt + validate + trivy + TF plan + apply); gate 3b = AMI in AWS
+- **Packer build infra:** ephemeral — **`make images-infra-*`** / **`make images-config-build`**; **`make images-infra-destroy`** after first AMI is stable (defer during early dev)
+- **Orchestration:** **`Makefile`** entrypoint; `make check` → `phase2-check.sh` → **`make` targets only** (never `setup-*.sh` from check script); setup scripts invoked by Makefile recipes; flags on `make` CLI (`make help`)
 - **AMI config layout:** `images/config/packer/` + `images/config/ansible/` (same split as k8s-homelab)
-- **Terraform modules:** shared `modules/infra/` — used by `images/infra/main-account/ca-central-1/prod/` and `provisioning/envs/dev/` (homelab-style split, greenfield code)
+- **Terraform modules:** shared `modules/infra/` — used by `images/infra/main-account/ca-central-1/prod/` and `cluster/infra/main-account/ca-central-1/prod/`; cluster-specific modules under `cluster/infra/modules/`
+- **Terraform variables:** **`nullable = false`** on every variable in live roots and child modules (including variables with defaults); see [Variables](#variables) under Terraform layout
 - **AWS provider:** `hashicorp/aws` **`~> 6.60.0`** — identical `versions.tf` on every live root and every `modules/infra/*/` child (homelab uses 5.86)
 
 ---

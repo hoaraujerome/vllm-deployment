@@ -5,7 +5,7 @@ resource "aws_vpc" "this" {
   enable_dns_hostnames = true
 
   tags = {
-    Name = "vpc"
+    Name = "${var.tag_prefix}vpc"
   }
 }
 
@@ -18,6 +18,6 @@ resource "aws_subnet" "this" {
   map_public_ip_on_launch = each.value.map_public_ip_on_launch
 
   tags = {
-    Name = each.key
+    Name = "${var.tag_prefix}${each.key}"
   }
 }

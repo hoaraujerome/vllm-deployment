@@ -19,9 +19,17 @@ variable "gateway_id" {
 variable "gateway_type" {
   description = "Gateway type for the default route: igw (internet gateway) or nat (NAT gateway)."
   type        = string
+  nullable    = false
 
   validation {
     condition     = contains(["igw", "nat"], var.gateway_type)
     error_message = "gateway_type must be igw or nat."
   }
+}
+
+variable "tag_prefix" {
+  description = "Prefix for the route table Name tag."
+  type        = string
+  default     = ""
+  nullable    = false
 }

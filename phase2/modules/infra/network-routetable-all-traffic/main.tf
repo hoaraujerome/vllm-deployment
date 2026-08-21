@@ -12,7 +12,7 @@ resource "aws_route_table" "this" {
   }
 
   tags = {
-    Name = "route-table"
+    Name = "${var.tag_prefix}route-table"
   }
 }
 

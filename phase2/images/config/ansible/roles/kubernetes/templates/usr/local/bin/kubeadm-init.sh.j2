@@ -7,7 +7,9 @@ CONTROL_PLANE_HOSTNAME="{{ kubernetes_control_plane_host_name }}"
 KUBEADM_CONFIG="/{{ kubernetes_kubeadm_config_path }}"
 
 if [[ -f /etc/kubernetes/admin.conf ]]; then
-  echo "[~] Cluster already initialized, skipping."
+  echo "[~] Cluster already initialized — ensuring kubelet survives reboot."
+  systemctl enable kubelet
+  systemctl start kubelet
   exit 0
 fi
 
@@ -41,5 +43,8 @@ systemctl restart containerd
 echo "[+] Removing control plane taint (single-node CP + worker)..."
 kubectl taint nodes --all node-role.kubernetes.io/control-plane:NoSchedule- \
   --kubeconfig /etc/kubernetes/admin.conf || true
+
+echo "[+] Enabling kubelet for boot (AMI bake leaves it disabled until init)..."
+systemctl enable kubelet
 
 echo "[+] Bootstrap complete."

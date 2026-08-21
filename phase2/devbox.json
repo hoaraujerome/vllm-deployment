@@ -17,7 +17,7 @@
     ],
     "scripts": {
       "check": [
-        "./scripts/phase2-check.sh"
+        "make check"
       ]
     }
   }

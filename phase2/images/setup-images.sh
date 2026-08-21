@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # AMI factory orchestrator — Packer builder infra + bake.
 #
-# Usage (from devbox shell, phase2/ or anywhere):
-#   ./images/setup-images.sh plan
-#   ./images/setup-images.sh deploy
-#   ./images/setup-images.sh build
-#   ./images/setup-images.sh destroy
+# Prefer the Makefile (phase2/):
+#   make images-infra-plan | images-infra-deploy | images-config-build | images-infra-destroy
+#
+# Direct invocation (Makefile recipes only — not from phase2-check.sh):
+#   ./images/setup-images.sh plan | deploy | build | destroy
 #
 # plan:  terraform fmt -check, validate modules + live, trivy, terraform plan
 # deploy: plan + terraform apply (builder VPC/subnet)
@@ -15,7 +15,9 @@
 # Env:
 #   AWS_PROFILE  — default k8s_homelab (homelab account)
 #   AWS_REGION   — default ca-central-1
-#   SKIP_TRIVY=1 — skip trivy fs scan
+#   SKIP_TRIVY=1              — skip trivy fs scan
+#   SKIP_AMI_INFRA_DEPLOY=1   — deploy runs plan only (no terraform apply)
+#   SKIP_AMI_BUILDING=1       — build skips packer (deploy only)
 
 set -euo pipefail
 
@@ -135,6 +137,10 @@ capture_packer_network() {
 
 deploy_infra() {
   plan_infra
+  if [[ "${SKIP_AMI_INFRA_DEPLOY:-}" == "1" ]]; then
+    log "Terraform apply skipped — SKIP_AMI_INFRA_DEPLOY=1"
+    return
+  fi
   run_terraform_apply
   capture_packer_network
 }
@@ -163,6 +169,10 @@ run_packer_build() {
 
 build_ami() {
   deploy_infra
+  if [[ "${SKIP_AMI_BUILDING:-}" == "1" ]]; then
+    log "Packer build skipped — SKIP_AMI_BUILDING=1"
+    return
+  fi
   run_packer_build
 }
 

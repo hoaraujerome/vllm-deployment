@@ -1,4 +1,5 @@
 locals {
+  tag_prefix                    = "vllm-phase2-images-"
   aws_region                    = "ca-central-1"
   packer_subnet_name            = "packer"
   vpc_ipv4_cidr_block           = "10.50.0.0/16"
@@ -8,6 +9,7 @@ locals {
 module "vpc" {
   source = "../../../../../modules/infra/network-vpc"
 
+  tag_prefix          = local.tag_prefix
   vpc_ipv4_cidr_block = local.vpc_ipv4_cidr_block
   subnets = {
     (local.packer_subnet_name) = {
@@ -20,12 +22,14 @@ module "vpc" {
 module "internet_gateway" {
   source = "../../../../../modules/infra/network-internetgateway"
 
-  vpc_id = module.vpc.vpc_id
+  tag_prefix = local.tag_prefix
+  vpc_id     = module.vpc.vpc_id
 }
 
 module "internet_gateway_route_table" {
   source = "../../../../../modules/infra/network-routetable-all-traffic"
 
+  tag_prefix   = local.tag_prefix
   vpc_id       = module.vpc.vpc_id
   subnet_id    = module.vpc.subnet_ids[local.packer_subnet_name]
   gateway_id   = module.internet_gateway.id

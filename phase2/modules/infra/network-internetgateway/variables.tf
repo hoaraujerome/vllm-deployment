@@ -3,3 +3,10 @@ variable "vpc_id" {
   type        = string
   nullable    = false
 }
+
+variable "tag_prefix" {
+  description = "Prefix for the internet gateway Name tag."
+  type        = string
+  default     = ""
+  nullable    = false
+}

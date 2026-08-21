@@ -1,45 +1,47 @@
 #!/usr/bin/env bash
-# Phase 2 cluster orchestrator — provision, configure, check, destroy.
+# Thin wrapper — prefer: make -C phase2 <target>
 #
 # Usage:
-#   ./cluster.sh provision
-#   ./cluster.sh configure
-#   ./cluster.sh check
-#   ./cluster.sh destroy
+#   ./scripts/cluster.sh plan       -> make cluster-infra-plan
+#   ./scripts/cluster.sh provision  -> make cluster-infra-deploy
+#   ./scripts/cluster.sh check      -> make check
+#   ./scripts/cluster.sh destroy    -> make cluster-infra-destroy
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PHASE2_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-TF_DIR="${PHASE2_DIR}/provisioning/envs/dev"
+MAKE="${MAKE:-make}"
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") <provision|configure|check|destroy>
+Usage: $(basename "$0") <plan|provision|configure|check|destroy>
 
-  provision   terraform apply (AWS infra)
-  configure   ansible playbooks (kubeadm bootstrap)
-  check       run phase2-check.sh validation ladder
-  destroy     tear down cluster and infra (TBD)
+  plan        make cluster-infra-plan
+  provision   make cluster-infra-deploy
+  configure   not implemented (bootstrap is AMI first-boot)
+  check       make check
+  destroy     make cluster-infra-destroy
 EOF
 }
 
 cmd="${1:-}"
 case "$cmd" in
+  plan)
+    exec "${MAKE}" -C "${PHASE2_DIR}" cluster-infra-plan
+    ;;
   provision)
-    terraform -chdir="$TF_DIR" init
-    terraform -chdir="$TF_DIR" apply
+    exec "${MAKE}" -C "${PHASE2_DIR}" cluster-infra-deploy
     ;;
   configure)
-    echo "ERROR: configure not implemented yet — add Ansible playbooks under configuration/" >&2
+    echo "ERROR: configure not implemented — bootstrap is baked into the AMI (first boot)" >&2
     exit 1
     ;;
   check)
-    exec "${SCRIPT_DIR}/phase2-check.sh"
+    exec "${MAKE}" -C "${PHASE2_DIR}" check
     ;;
   destroy)
-    echo "ERROR: destroy not implemented yet" >&2
-    exit 1
+    exec "${MAKE}" -C "${PHASE2_DIR}" cluster-infra-destroy
     ;;
   -h | --help | "")
     usage
