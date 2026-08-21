@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+METADATA_URL="http://169.254.169.254/latest"
+CONTROL_PLANE_HOSTNAME="{{ kubernetes_control_plane_host_name }}"
+KUBEADM_CONFIG="/{{ kubernetes_kubeadm_config_path }}"
+
+if [[ -f /etc/kubernetes/admin.conf ]]; then
+  echo "[~] Cluster already initialized, skipping."
+  exit 0
+fi
+
+echo "[*] Fetching instance metadata..."
+TOKEN=$(curl -sf -X PUT "${METADATA_URL}/api/token" \
+  -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+CONTROL_PLANE_PRIVATE_IP=$(
+  curl -sf -H "X-aws-ec2-metadata-token: ${TOKEN}" \
+    "${METADATA_URL}/meta-data/local-ipv4"
+)
+
+echo "[+] Updating /etc/hosts for control plane endpoint..."
+if ! grep -q "${CONTROL_PLANE_HOSTNAME}" /etc/hosts; then
+  echo "${CONTROL_PLANE_PRIVATE_IP} ${CONTROL_PLANE_HOSTNAME}" >>/etc/hosts
+fi
+
+echo "[+] Running kubeadm init..."
+kubeadm init --config="${KUBEADM_CONFIG}" \
+  --node-name="${CONTROL_PLANE_HOSTNAME}" |
+  tee /root/kubeadm-init.out
+
+echo "[+] Installing Cilium..."
+cilium install \
+  --version {{ cilium_version }} \
+  --set ipam.operator.clusterPoolIPv4PodCIDRList={{ kubernetes_pod_subnet }} \
+  --kubeconfig /etc/kubernetes/admin.conf
+
+echo "[+] Restarting containerd to read Cilium config..."
+systemctl restart containerd
+
+echo "[+] Removing control plane taint (single-node CP + worker)..."
+kubectl taint nodes --all node-role.kubernetes.io/control-plane:NoSchedule- \
+  --kubeconfig /etc/kubernetes/admin.conf || true
+
+echo "[+] Bootstrap complete."

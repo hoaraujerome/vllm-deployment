@@ -1,0 +1,31 @@
+---
+# Version pins — bump here only; AMI bake and first-boot bootstrap read from this file.
+kubernetes_version: v1.36
+kubernetes_apt_version: 1.36.3-1.1
+ciliumcli_version: v0.19.7
+cilium_version: 1.20.0
+
+# Host architecture — map ansible_facts['architecture'] to Debian/apt arch names
+apt_architecture: "{{ 'arm64' if ansible_facts['architecture'] == 'aarch64' else ('amd64' if ansible_facts['architecture'] == 'x86_64' else ansible_facts['architecture']) }}"
+
+# Kubernetes (AMI bake)
+kubernetes_packages:
+  - kubelet
+  - kubeadm
+  - kubectl
+kubernetes_control_plane_host_name: k8scp
+kubernetes_pod_subnet: 192.168.0.0/16
+kubernetes_kubeadm_config_path: root/kubeadm-config.yaml
+kubernetes_kubeadm_init_script_path: usr/local/bin/kubeadm-init.sh
+kubernetes_kubeadm_init_service_path: etc/systemd/system/kubeadm-init.service
+kubernetes_cloud_init_k8s_config_path: etc/cloud/cloud.cfg.d/99_k8s.cfg
+
+# Cilium CLI (AMI bake)
+ciliumcli_base_url: https://github.com/cilium/cilium-cli/releases/download/
+ciliumcli_archive: "cilium-linux-{{ apt_architecture }}.tar.gz"
+ciliumcli_tmp_directory: /tmp
+ciliumcli_archive_path: "{{ ciliumcli_tmp_directory }}/{{ ciliumcli_archive }}"
+ciliumcli_checksum_extension: .sha256sum
+
+# containerd (AMI bake) — base config from `containerd config default`; overrides in conf.d only
+containerd_sandbox_image: registry.k8s.io/pause:3.10

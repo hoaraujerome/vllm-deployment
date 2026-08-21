@@ -1,0 +1,69 @@
+---
+- name: Ensure apt keyrings directory exists
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: "0755"
+
+- name: Add Docker apt repository
+  ansible.builtin.deb822_repository:
+    name: docker
+    types: deb
+    uris: https://download.docker.com/linux/ubuntu
+    suites: "{{ ansible_facts['distribution_release'] }}"
+    components: stable
+    architectures: "{{ apt_architecture }}"
+    signed_by: https://download.docker.com/linux/ubuntu/gpg
+    state: present
+    enabled: true
+
+- name: Install containerd
+  ansible.builtin.apt:
+    name: containerd.io
+    update_cache: true
+    state: present
+
+- name: Ensure containerd config directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - /etc/containerd
+    - /etc/containerd/conf.d
+
+- name: Generate default containerd config
+  ansible.builtin.command: containerd config default
+  register: containerd_default_config
+  changed_when: false
+
+- name: Install default containerd config
+  ansible.builtin.copy:
+    content: "{{ containerd_default_config.stdout }}"
+    dest: /etc/containerd/config.toml
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart containerd
+
+- name: Enable containerd drop-in config imports
+  ansible.builtin.replace:
+    path: /etc/containerd/config.toml
+    regexp: '^imports = \[\]$'
+    replace: 'imports = ["/etc/containerd/conf.d/*.toml"]'
+  notify: Restart containerd
+
+- name: Install Kubernetes containerd overrides
+  ansible.builtin.template:
+    src: conf.d/k8s.toml.j2
+    dest: /etc/containerd/conf.d/k8s.toml
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart containerd
+
+- name: Ensure containerd is enabled and running
+  ansible.builtin.systemd:
+    name: containerd
+    enabled: true
+    state: started

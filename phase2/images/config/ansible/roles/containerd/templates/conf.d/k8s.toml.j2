@@ -1,0 +1,7 @@
+# Kubernetes overrides — merged via /etc/containerd/conf.d (see main config imports).
+
+[plugins."io.containerd.grpc.v1.cri"]
+  sandbox_image = "{{ containerd_sandbox_image }}"
+
+[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc.options]
+  SystemdCgroup = true

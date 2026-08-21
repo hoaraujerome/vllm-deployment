@@ -1,0 +1,80 @@
+---
+- name: Configure systemd journald
+  block:
+    - name: Ensure journald drop-ins directory exists
+      ansible.builtin.file:
+        path: /etc/systemd/journald.conf.d
+        state: directory
+        mode: "0755"
+
+    - name: Persist journal storage
+      ansible.builtin.copy:
+        dest: /etc/systemd/journald.conf.d/storage.conf
+        content: |
+          [Journal]
+          Storage=persistent
+        mode: "0644"
+
+    - name: Restart journald
+      ansible.builtin.systemd:
+        name: systemd-journald
+        state: restarted
+        daemon_reload: true
+
+- name: Configure swap
+  block:
+    - name: Check if swap is active
+      ansible.builtin.command: swapon --summary
+      register: node_swap_status
+      changed_when: false
+      failed_when: false
+
+    - name: Disable swap memory
+      ansible.builtin.command: swapoff -a
+      when: node_swap_status.stdout != ""
+      changed_when: true
+
+    - name: Comment out swap line in fstab
+      ansible.builtin.lineinfile:
+        path: /etc/fstab
+        regexp: '^\s*[^#]+\s+swap\s'
+        line: '# \g<0>'
+        backrefs: true
+      when: node_swap_status.stdout != ""
+
+- name: Configure kernel modules
+  block:
+    - name: Load overlay module
+      ansible.builtin.command: modprobe overlay
+      changed_when: false
+
+    - name: Load br_netfilter module
+      ansible.builtin.command: modprobe br_netfilter
+      changed_when: false
+
+    - name: Persist required kernel modules
+      ansible.builtin.copy:
+        content: |
+          overlay
+          br_netfilter
+        dest: /etc/modules-load.d/kubernetes.conf
+        mode: "0644"
+
+- name: Set and persist kernel params
+  ansible.builtin.copy:
+    dest: /etc/sysctl.d/99-kubernetes.conf
+    mode: "0644"
+    content: |
+      net.bridge.bridge-nf-call-iptables = 1
+      net.bridge.bridge-nf-call-ip6tables = 1
+      net.ipv4.ip_forward = 1
+      net.ipv6.conf.all.forwarding = 1
+      net.ipv6.conf.all.disable_ipv6 = 0
+      net.ipv4.tcp_congestion_control = bbr
+      net.ipv4.conf.all.rp_filter = 1
+      vm.overcommit_memory = 1
+      kernel.panic = 10
+      kernel.panic_on_oops = 1
+      fs.inotify.max_user_instances = 8192
+      fs.inotify.max_user_watches = 524288
+  notify: Apply sysctl settings

@@ -1,0 +1,69 @@
+---
+- name: Ensure apt keyrings directory exists
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: "0755"
+
+- name: Add Kubernetes apt repository
+  ansible.builtin.deb822_repository:
+    name: kubernetes
+    types: deb
+    uris: "https://pkgs.k8s.io/core:/stable:/{{ kubernetes_version }}/deb/"
+    suites: /
+    signed_by: "https://pkgs.k8s.io/core:/stable:/{{ kubernetes_version }}/deb/Release.key"
+    state: present
+    enabled: true
+
+- name: Install Kubernetes packages with pinned version
+  ansible.builtin.apt:
+    name: "{{ item }}={{ kubernetes_apt_version }}"
+    update_cache: true
+    state: present
+  loop: "{{ kubernetes_packages }}"
+
+- name: Hold Kubernetes packages
+  ansible.builtin.dpkg_selections:
+    name: "{{ item }}"
+    selection: hold
+  loop: "{{ kubernetes_packages }}"
+
+- name: Disable kubelet until kubeadm init (first boot)
+  ansible.builtin.systemd:
+    name: kubelet
+    enabled: false
+    state: stopped
+
+- name: Create kubeadm-config file
+  ansible.builtin.template:
+    src: "{{ kubernetes_kubeadm_config_path }}.j2"
+    dest: "/{{ kubernetes_kubeadm_config_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Configure first-boot bootstrap
+  block:
+    - name: Create kubeadm-init script
+      ansible.builtin.template:
+        src: "{{ kubernetes_kubeadm_init_script_path }}.j2"
+        dest: "/{{ kubernetes_kubeadm_init_script_path }}"
+        owner: root
+        group: root
+        mode: "0740"
+
+    - name: Create kubeadm-init service
+      ansible.builtin.template:
+        src: "{{ kubernetes_kubeadm_init_service_path }}.j2"
+        dest: "/{{ kubernetes_kubeadm_init_service_path }}"
+        owner: root
+        group: root
+        mode: "0640"
+
+    - name: Install cloud-init k8s config
+      ansible.builtin.copy:
+        src: "{{ kubernetes_cloud_init_k8s_config_path }}"
+        dest: "/{{ kubernetes_cloud_init_k8s_config_path }}"
+        owner: root
+        group: root
+        mode: "0644"

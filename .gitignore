@@ -1,0 +1,8 @@
+# Terraform — local state and provider/plugin cache
+.terraform/
+*.tfstate
+*.tfstate.*
+
+# Terraform crash logs (local only)
+crash.log
+crash.*.log

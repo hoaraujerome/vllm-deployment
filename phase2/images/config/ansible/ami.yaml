@@ -1,0 +1,29 @@
+---
+- name: Bake kubeadm base AMI for vLLM Phase 2
+  hosts: default
+  become: true
+  gather_facts: true
+
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+
+  pre_tasks:
+    - name: Install apt dependencies for deb822 repositories
+      ansible.builtin.apt:
+        name:
+          - ca-certificates
+          - python3-debian
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+      tags: [always]
+
+  roles:
+    - role: node
+      tags: [node, base]
+    - role: containerd
+      tags: [containerd, runtime]
+    - role: ciliumcli
+      tags: [ciliumcli, cni]
+    - role: kubernetes
+      tags: [kubernetes, k8s]
