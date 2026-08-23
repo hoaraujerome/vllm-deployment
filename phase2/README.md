@@ -1,7 +1,7 @@
 # Phase 2 — Kubernetes cluster
 
 
-**Status:** in progress
+**Status:** complete (validated 2026-08-23)
 
 **Prerequisite:** [Phase 1](../phase1/README.md) (optional — no hard dependency)
 
@@ -13,7 +13,17 @@
 
 ## Done when
 
-`make check` exits 0 — a functional Kubernetes cluster on AWS with all nodes Ready and a smoke pod running.
+`make check-full` exits 0 — greenfield AMI build, cluster apply, and runtime gates (EICE, bootstrap, node Ready, smoke pod).
+
+**Validated:**
+
+| Check | Result |
+| ----- | ------ |
+| `make check-full` | exit 0 |
+| EC2 reboot (AWS console) → `make check-cluster` | exit 0 |
+| `systemctl is-enabled kubelet` on node after reboot | `enabled` |
+
+**Day-to-day:** `make check-cluster` (gates 1, 9–12) while the cluster exists.
 
 ---
 
@@ -37,9 +47,9 @@ Phase 2 proves the **cluster contract** — infrastructure, kubeadm bootstrap, s
 
 
 
-## Goal (start here — refine in Loop 2)
+## Goal (Phase 2 — achieved)
 
-Bootstrap a minimal **kubeadm cluster on AWS** from greenfield code: Terraform provisions, custom AMI (Packer + Ansible) or node config, validation ladder proves it works.
+Bootstrap a minimal **kubeadm cluster on AWS** from greenfield code: Terraform provisions, custom AMI (Packer + Ansible), validation ladder proves it works.
 
 Example starting spec:
 
@@ -64,7 +74,7 @@ Scope:    no vLLM, no GPU, no ingress
 
 
 
-## Constraints (Loop 2 — update as you learn)
+## Constraints (Loop 2 — frozen for Phase 2)
 
 - **Greenfield:** new code under `phase2/` — `k8s-homelab` is inspirational, not a fork
 - **Dev environment:** **devbox** in `phase2/` — run all Phase 2 commands from `devbox shell`; pinned toolchain:
@@ -139,9 +149,7 @@ templates: kubeadm-init.sh,                                          kubeadm-ini
                                                                       → systemctl enable kubelet
 ```
 
-**Kubelet on reboot:** the AMI bake **disables** kubelet so it cannot start before `kubeadm init`. After init (and on every later boot via the script’s early-exit path), **`kubeadm-init.sh` enables kubelet** so the node rejoins the cluster after reboot. Gate 6 asserts `systemctl is-enabled kubelet`.
-
-**Existing nodes** baked before this fix: one-time repair over EICE — `sudo systemctl enable --now kubelet`, or `sudo systemctl start kubeadm-init.service` after deploying an AMI that includes the updated script.
+**Kubelet on reboot:** the AMI bake **disables** kubelet so it cannot start before `kubeadm init`. After init (and on every later boot via the script’s early-exit path), **`kubeadm-init.sh` enables kubelet** so the node rejoins the cluster after reboot. Gate **10** (bootstrap) asserts `systemctl is-enabled kubelet`.
 
 | Piece | Baked where (Ansible `kubernetes` role) | Runs when |
 | ----- | ---------------------------------------- | --------- |
@@ -220,7 +228,7 @@ variable "instance_type" {
 ```text
 make images-infra-plan      # gate 4 — fmt, validate, trivy, terraform plan
 make images-infra-apply     # gate 5 — terraform apply (builder VPC/subnet)
-make images-config-build    # gate 6 — packer build (after apply; or full deploy+build)
+make images-config-build    # gate 6 — packer build (SKIP_AMI_INFRA_DEPLOY=1 if gate 5 already applied)
 make images-infra-destroy   # tear down builder infra (defer during early dev)
 ```
 
@@ -276,7 +284,7 @@ Homelab reference: `~/DEV/k8s-homelab/.pre-commit-config.yaml` (YAML + gitleaks 
 
 ## Validation ladder — `make check` (the real work)
 
-Define `./scripts/phase2-check.sh` **before** heavy infra work. Run it via **`make check`** or a **preset** (preferred day-to-day):
+Define `./scripts/phase2-check.sh` **before** heavy infra work (done). Run it via **`make check`** or a **preset** (preferred day-to-day):
 
 | Preset | Use when | Gates |
 | ------ | -------- | ----- |
@@ -319,11 +327,9 @@ make check-full
 ```
 
 
-**Done when:** `make check` exits 0.
+**Phase 2 closeout:** full ladder green + reboot survival confirmed — see [Done when](#done-when).
 
 ---
-
-
 
 ## Agentic loop workflow (Loop 1)
 
@@ -334,7 +340,7 @@ Agent edits TF / Packer / Ansible
         ↓
 Run make check
         ↓
-All gates pass? ──Yes──→ Phase 2 done
+All gates pass? ──Yes──→ move to next phase (Phase 2: done)
         │
         No → feed stderr back → repeat
 ```
@@ -344,7 +350,7 @@ Prompt shape for Cursor:
 ```text
 Goal: functional single-node kubeadm cluster on AWS (ca-central-1).
 Constraints: 1 private node (CP + worker), t4g.small, EICE access, kubeadm built-in PKI, Cilium, AMI first-boot bootstrap (cloud-init + systemd), devbox shell, greenfield — inspired by ~/DEV/k8s-homelab, no copy.
-Validation: make check must exit 0.
+Validation: make check-full (greenfield) or make check-cluster (daily) must exit 0.
 Current failure: <paste stderr>
 Fix only what the checks require.
 ```
@@ -370,9 +376,13 @@ Your laptop
 Example (from homelab):
 
 ```bash
+make cluster-ssh
+# or manually:
 ssh -i ~/.ssh/id_rsa_k8s_homelab ubuntu@<instance-id> \
   -o ProxyCommand='aws ec2-instance-connect open-tunnel --instance-id <instance-id>'
 ```
+
+**SSH locale warning:** `-bash: setlocale: LC_ALL: cannot change locale (en_CA.UTF-8)` on login is harmless (image locale pack); does not affect cluster health gates.
 
 - **Nodes:** private subnet, no public IP
 - **NAT gateway:** outbound internet for pulls (homelab pattern)
@@ -426,6 +436,7 @@ phase2/
 ├── configuration/                             # not used for Phase 2 bootstrap (defer / other uses)
 └── scripts/
     ├── phase2-check.sh                          # ladder; calls make targets only
+    ├── cluster-ssh.sh                           # EICE SSH (make cluster-ssh)
     └── cluster.sh                               # thin wrapper → make
 ```
 
@@ -435,16 +446,17 @@ phase2/
 
 ## Checklist (implementation tasks)
 
-- [ ] `Makefile` + validation ladder wired (`make check`; check script uses `make` targets only)
-- [ ] Scaffold `modules/infra/` (shared child modules — VPC, etc.)
-- [ ] Scaffold `cluster/infra/main-account/ca-central-1/prod/` (cluster live — VPC, NAT, EICE, EC2)
-- [ ] Scaffold `images/infra/main-account/ca-central-1/prod/` (ephemeral Packer builder network)
-- [ ] Scaffold `images/config/packer/` + `images/config/ansible/` (`ami.yaml` + roles)
-- [ ] Pin versions in `group_vars/all.yaml`; template kubeadm config + bootstrap script from vars
-- [ ] Packer + Ansible: base AMI (containerd, kubeadm, Cilium CLI) **+ kubeadm-init.sh, systemd unit, cloud-init**
-- [ ] Single-node bootstrap in baked script: `kubeadm init`, `cilium install`, remove CP taint, `systemctl enable kubelet`
-- [ ] `cluster.sh` thin wrapper → `make` (bootstrap is first boot, not a configure step)
-- [ ] Ladder green: node Ready, smoke pod Running (kubectl **on node** via EICE)
+- [x] `Makefile` + validation ladder wired (`make check`; check script uses `make` targets only)
+- [x] Scaffold `modules/infra/` (shared child modules — VPC, etc.)
+- [x] Scaffold `cluster/infra/main-account/ca-central-1/prod/` (cluster live — VPC, NAT, EICE, EC2)
+- [x] Scaffold `images/infra/main-account/ca-central-1/prod/` (ephemeral Packer builder network)
+- [x] Scaffold `images/config/packer/` + `images/config/ansible/` (`ami.yaml` + roles)
+- [x] Pin versions in `group_vars/all.yaml`; template kubeadm config + bootstrap script from vars
+- [x] Packer + Ansible: base AMI (containerd, kubeadm, Cilium CLI) **+ kubeadm-init.sh, systemd unit, cloud-init**
+- [x] Single-node bootstrap in baked script: `kubeadm init`, `cilium install`, remove CP taint, `systemctl enable kubelet`
+- [x] `cluster.sh` thin wrapper → `make` (bootstrap is first boot, not a configure step)
+- [x] Ladder green: `make check-full` exit 0; reboot → `make check-cluster` exit 0; node Ready, smoke pod Running (kubectl **on node** via EICE)
+- [x] pre-commit + `make pre-commit` (local hygiene before commit; not in check ladder)
 
 ---
 
@@ -478,4 +490,6 @@ phase2/
 
 ## Next
 
-→ [Phase 3](../phase3/README.md)
+Phase 2 is **done** — cluster factory validated. Optional housekeeping: `make images-infra-destroy` when you no longer need the Packer builder VPC.
+
+→ [Phase 3](../phase3/README.md) — WireGuard; laptop-native `kubectl` / Helm for Phase 4+

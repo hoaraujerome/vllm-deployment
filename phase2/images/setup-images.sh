@@ -38,7 +38,7 @@ Usage: $(basename "$0") <plan|apply|deploy|build|destroy>
   plan     fmt + validate + trivy + terraform plan (AMI builder infra)
   apply    terraform apply + capture Packer network outputs
   deploy   plan + apply
-  build    packer build (set SKIP_AMI_INFRA_DEPLOY=1 if apply gate already ran)
+  build    packer build (set SKIP_AMI_INFRA_DEPLOY=1 if apply gate already ran; reads TF outputs)
   destroy  terraform destroy (builder infra only)
 EOF
 }
@@ -120,6 +120,7 @@ run_terraform_apply() {
 
 capture_packer_network() {
   log "Capture Packer network outputs"
+  terraform -chdir="${IMAGES_TF_DIR}" init -input=false >/dev/null
   local outputs
   outputs="$(terraform -chdir="${IMAGES_TF_DIR}" output -json)"
   export PKR_VAR_vpc_id
@@ -175,6 +176,8 @@ run_packer_build() {
 build_ami() {
   if [[ "${SKIP_AMI_INFRA_DEPLOY:-}" != "1" ]]; then
     deploy_infra
+  else
+    capture_packer_network
   fi
   if [[ "${SKIP_AMI_BUILDING:-}" == "1" ]]; then
     log "Packer build skipped — SKIP_AMI_BUILDING=1"

@@ -1,3 +1,6 @@
+# Ansible
+.ansible/.lock
+
 # Terraform — local state and provider/plugin cache
 .terraform/
 *.tfstate
