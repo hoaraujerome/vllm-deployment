@@ -493,3 +493,16 @@ phase2/
 Phase 2 is **done** — cluster factory validated. Optional housekeeping: `make images-infra-destroy` when you no longer need the Packer builder VPC.
 
 → [Phase 3](../phase3/README.md) — WireGuard; laptop-native `kubectl` / Helm for Phase 4+
+
+### Interface for Phase 3 (additive only)
+
+Phase 3 is the **access layer** — it must not reopen cluster factory scope (AMI, bootstrap, EICE removal). The only expected Phase 2 code change is **cluster live outputs** for Phase 3 remote state:
+
+| Output | Used by Phase 3 for |
+| ------ | ------------------- |
+| `vpc_id` | WireGuard EC2 placement |
+| `nat_gateway_subnet_id` | WireGuard EC2 subnet (Option A) |
+| `k8s_node_security_group_id` | Ingress rule: TCP 6443 from WireGuard SG |
+| `k8s_node_private_ip` | Laptop kubeconfig `server:` URL |
+
+Phase 2 validation (`make check-cluster`) stays the cluster contract. Phase 3 validation (`phase3-check.sh`) proves laptop kubectl over VPN. Keep EICE as break-glass — see [Phase 3](../phase3/README.md).
