@@ -1,0 +1,44 @@
+# Phase 2 — local commit hooks (fast hygiene only).
+#
+# Heavy checks (trivy, terraform validate/plan, packer build, cluster health)
+# live in the make check ladder — see README § "Quality gates".
+#
+# Setup (once, inside devbox shell):
+#   pre-commit install
+# Optional full-tree run:
+#   pre-commit run --all-files
+#
+# See https://pre-commit.com for more information
+fail_fast: true
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-yaml
+        args: ['--allow-multiple-documents']
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.20.1
+    hooks:
+      - id: gitleaks
+  - repo: https://github.com/ansible/ansible-lint
+    rev: v25.8.2
+    hooks:
+      - id: ansible-lint
+        name: ansible-lint (phase2 AMI playbook)
+        files: ^phase2/images/config/ansible/
+        args:
+          - --project-dir=phase2/images/config/ansible
+          - phase2/images/config/ansible/ami.yaml
+        pass_filenames: false
+        additional_dependencies:
+          - ansible
+  - repo: https://github.com/antonbabenko/pre-commit-terraform
+    rev: v1.96.3
+    hooks:
+      - id: terraform_fmt
+        files: ^phase2/.*\.(tf|tfvars)$
+  - repo: https://github.com/cisagov/pre-commit-packer
+    rev: v0.3.1
+    hooks:
+      - id: packer_fmt
+        files: ^phase2/images/config/packer/.*\.pkr\.(hcl|vars\.hcl)$

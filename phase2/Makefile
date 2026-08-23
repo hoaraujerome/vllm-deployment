@@ -3,16 +3,17 @@ SHELL := /usr/bin/env bash
 # Phase 2 entrypoint — run from phase2/ (devbox shell).
 #
 # Usage:
-#   make check
-#   make check SKIP_TF_APPLY=1 SKIP_ANSIBLE=1
-#   make cluster-infra-plan
-#   make images-config-build RUN_PACKER_BUILD=1
+#   make check-gates            # list gates + skip flags
+#   make check-cluster          # daily — gates 1, 9–12
+#   make check-ami              # AMI factory — gates 1–6
+#   make check-full             # greenfield — all gates + build + apply
+#   make pre-commit             # local hygiene before git commit (not in ladder)
 #
 # Flags export to setup-images.sh, setup-cluster.sh, and phase2-check.sh.
 
-.PHONY: help check \
-	images-infra-plan images-infra-deploy images-infra-destroy images-config-build \
-	cluster-infra-plan cluster-infra-validate cluster-infra-deploy cluster-infra-destroy \
+.PHONY: help check check-gates check-cluster check-ami check-full pre-commit \
+	images-infra-plan images-infra-apply images-infra-deploy images-infra-destroy images-config-build \
+	cluster-infra-plan cluster-infra-validate cluster-infra-apply cluster-infra-deploy cluster-infra-destroy \
 	cluster-ssh
 
 # --- AWS / Terraform defaults ---
@@ -26,23 +27,27 @@ export TF_VAR_ami_name_prefix ?= $(AMI_NAME_PREFIX)
 
 # --- Orchestrator skips (passed through to setup-*.sh) ---
 export SKIP_TRIVY ?=
-
-# --- Validation ladder skips (phase2-check.sh) ---
-export SKIP_CLUSTER_TF ?=
-export SKIP_TF_PLAN ?=
-export SKIP_AMI ?=
-export SKIP_AMI_PLAN ?=
-export SKIP_AMI_ARTIFACT ?=
-export SKIP_AMI_BUILDING ?=
 export SKIP_AMI_INFRA_DEPLOY ?=
-export SKIP_AMI_ANSIBLE_SYNTAX ?=
-export SKIP_AMI_ANSIBLE_LINT ?=
-export SKIP_TF_APPLY ?=
-export SKIP_ANSIBLE ?=
-export SKIP_SMOKE ?=
-export SKIP_EICE_SSH ?=
+export SKIP_AMI_BUILDING ?=
 
-# --- Cluster health polling (phase2-check.sh gates 6–7) ---
+# --- Gate skips (phase2-check.sh) — see: make check-gates ---
+export SKIP_GATE_DEVBOX ?=
+export SKIP_GATE_AMI_BLOCK ?=
+export SKIP_GATE_AMI_ANSIBLE_SYNTAX ?=
+export SKIP_GATE_AMI_ANSIBLE_LINT ?=
+export SKIP_GATE_AMI_INFRA_PLAN ?=
+export SKIP_GATE_AMI_INFRA_APPLY ?=
+export SKIP_GATE_AMI_ARTIFACT ?=
+export SKIP_GATE_CLUSTER_BLOCK ?=
+export SKIP_GATE_CLUSTER_INFRA_PLAN ?=
+export SKIP_GATE_CLUSTER_INFRA_APPLY ?=
+export SKIP_GATE_SSH ?=
+export SKIP_GATE_RUNTIME_BLOCK ?=
+export SKIP_GATE_BOOTSTRAP ?=
+export SKIP_GATE_NODE_READY ?=
+export SKIP_GATE_SMOKE ?=
+
+# --- Cluster health polling (gates 10–12) ---
 export CLUSTER_BOOTSTRAP_TIMEOUT ?= 900
 export CLUSTER_BOOTSTRAP_INTERVAL ?= 20
 export CLUSTER_HEALTH_TIMEOUT ?= 900
@@ -58,48 +63,56 @@ help:
 	@echo "Phase 2 Makefile — primary entrypoint"
 	@echo ""
 	@echo "Targets:"
-	@echo "  check                    full validation ladder (phase2-check.sh)"
+	@echo "  check-gates              list gates 1–12 and SKIP_GATE_* flags"
+	@echo "  check                    full ladder (prefer presets below)"
+	@echo "  check-cluster            daily — gates 1, 9–12"
+	@echo "  check-ami                AMI factory — gates 1–6"
+	@echo "  check-full               greenfield — all gates + build + apply"
 	@echo "  images-infra-plan        AMI builder: fmt, validate, trivy, plan"
-	@echo "  images-infra-deploy      AMI builder: plan + apply (builder VPC/subnet)"
-	@echo "  images-config-build      AMI builder: deploy + packer build"
-	@echo "  images-infra-destroy     tear down AMI builder infra"
+	@echo "  images-infra-apply       AMI builder: terraform apply only"
+	@echo "  images-infra-deploy      AMI builder: plan + apply"
+	@echo "  images-config-build      AMI builder: deploy + packer (or packer only if SKIP_AMI_INFRA_DEPLOY=1)"
 	@echo "  cluster-infra-plan       cluster live: fmt, validate, trivy, plan"
-	@echo "  cluster-infra-validate   cluster live: fmt, validate, trivy (no plan)"
+	@echo "  cluster-infra-apply      cluster live: terraform apply only"
 	@echo "  cluster-infra-deploy     cluster live: plan + apply"
-	@echo "  cluster-infra-destroy    tear down cluster infra"
 	@echo "  cluster-ssh              interactive SSH to k8s node via EICE"
+	@echo "  pre-commit               local hygiene before git commit (not in check ladder)"
 	@echo ""
-	@echo "Common flags (append to any target):"
-	@echo "  SKIP_CLUSTER_TF=1        skip cluster TF gates in check"
-	@echo "  SKIP_TF_PLAN=1           cluster validate only (no terraform plan)"
-	@echo "  SKIP_AMI=1               skip all AMI gates in check"
-	@echo "  SKIP_AMI_PLAN=1          skip AMI infra deploy (gate 3a)"
-	@echo "  SKIP_AMI_ARTIFACT=1      skip AMI presence check (gate 3b)"
-	@echo "  SKIP_AMI_BUILDING=1      skip packer build inside images-config-build"
-	@echo "  SKIP_AMI_INFRA_DEPLOY=1  AMI deploy runs plan only (no apply)"
-	@echo "  SKIP_TF_APPLY=1          skip cluster apply gate"
-	@echo "  SKIP_EICE_SSH=1          skip EICE SSH gate (5)"
-	@echo "  SKIP_ANSIBLE=1           skip gates 6–8; exit after gate 5"
-	@echo "  SKIP_SMOKE=1             skip gate 8 only (run gates 6–7)"
-	@echo "  RUN_PACKER_BUILD=1       build AMI in check if missing (gate 3b)"
-	@echo "  RUN_CLUSTER_APPLY=1      apply cluster in check (gate 4)"
-	@echo "  SKIP_TRIVY=1             skip trivy in setup-*.sh"
-	@echo "  SSH_PUBLIC_KEY_PATH=...  EC2 key pair public key (default: ~/.ssh/id_rsa_k8s_homelab.pub)"
-	@echo "  SSH_PRIVATE_KEY_PATH=... SSH key for EICE (default: ~/.ssh/id_rsa_k8s_homelab)"
-	@echo "  CLUSTER_BOOTSTRAP_TIMEOUT=900   gate 6 poll timeout (seconds)"
-	@echo "  CLUSTER_HEALTH_TIMEOUT=900      gate 7 poll timeout (seconds)"
+	@echo "Presets:"
+	@echo "  make check-cluster"
+	@echo "  make check-ami RUN_PACKER_BUILD=1"
+	@echo "  make check-full"
 	@echo ""
-	@echo "Examples:"
-	@echo "  make check SKIP_TF_APPLY=1 SKIP_ANSIBLE=1"
-	@echo "  make images-config-build"
-	@echo "  make cluster-infra-plan"
-	@echo "  make cluster-ssh"
+	@echo "Skip any gate: make check-gates (or SKIP_GATE_AMI_BLOCK=1, etc.)"
 
 check:
 	./scripts/phase2-check.sh
 
+check-gates:
+	./scripts/phase2-check.sh --list-gates
+
+check-cluster:
+	@$(MAKE) check \
+		SKIP_GATE_AMI_BLOCK=1 \
+		SKIP_GATE_CLUSTER_BLOCK=1
+
+check-ami:
+	@$(MAKE) check \
+		SKIP_GATE_CLUSTER_BLOCK=1 \
+		SKIP_GATE_SSH=1 \
+		SKIP_GATE_RUNTIME_BLOCK=1
+
+check-full:
+	@$(MAKE) check RUN_PACKER_BUILD=1 RUN_CLUSTER_APPLY=1
+
+pre-commit:
+	pre-commit run --all-files
+
 images-infra-plan:
 	./images/setup-images.sh plan
+
+images-infra-apply:
+	./images/setup-images.sh apply
 
 images-infra-deploy:
 	./images/setup-images.sh deploy
@@ -115,6 +128,9 @@ cluster-infra-plan:
 
 cluster-infra-validate:
 	./cluster/setup-cluster.sh validate
+
+cluster-infra-apply:
+	./cluster/setup-cluster.sh apply
 
 cluster-infra-deploy:
 	./cluster/setup-cluster.sh deploy

@@ -101,7 +101,8 @@ Scope:    no vLLM, no GPU, no ingress
   - **`make check`** → `scripts/phase2-check.sh` (validation ladder)
   - **`phase2-check.sh`** → **`make` targets only** — never call `images/setup-images.sh` or `cluster/setup-cluster.sh` directly
   - **Makefile recipes** → `setup-images.sh` / `setup-cluster.sh` (implementation detail)
-  - **Flags** (`SKIP_*`, `RUN_*`) are set on the **`make`** command line; Makefile `export`s them to check script and setup scripts (`make check SKIP_TF_APPLY=1`)
+  - **Flags** (`SKIP_GATE_*`, `RUN_*`) are set on the **`make`** command line; Makefile `export`s them to the check script and setup scripts
+- **Quality gates (two layers)** — see [Quality gates — pre-commit vs `make check`](#quality-gates--pre-commit-vs-make-check) below
 - **No vLLM / no GPU** in Phase 2 — cluster factory only
 
 
@@ -217,51 +218,105 @@ variable "instance_type" {
 **AMI build flow** (orchestrated by **`make`** → `images/setup-images.sh`):
 
 ```text
-make images-infra-plan      # fmt, validate, trivy, terraform plan (no apply)
-make images-infra-deploy    # gate 3a — plan + terraform apply (builder VPC/subnet)
-make images-config-build    # deploy + packer build → gate 3b (AMI in AWS)
+make images-infra-plan      # gate 4 — fmt, validate, trivy, terraform plan
+make images-infra-apply     # gate 5 — terraform apply (builder VPC/subnet)
+make images-config-build    # gate 6 — packer build (after apply; or full deploy+build)
 make images-infra-destroy   # tear down builder infra (defer during early dev)
 ```
 
 ---
 
+## Quality gates — pre-commit vs `make check`
 
+Two layers on purpose — do not fold the full ladder into pre-commit (slow commits, drift, `--no-verify`).
+
+| Layer | When | What | Config / entrypoint |
+| ----- | ---- | ---- | ------------------- |
+| **pre-commit** | Before `git commit` (after loops + `make check` green) | Secrets, YAML, Ansible lint, auto-fmt | `.pre-commit-config.yaml`; hooks via `pre-commit install` |
+| **`make pre-commit`** | Optional dry-run of the full tree (same hooks, not staged-only) | Same as pre-commit | `make pre-commit` — **not** in the check ladder |
+| **`make check`** | During Loop 1 / CI / presets | Trivy, terraform validate, plan, apply, packer build, cluster health | `scripts/phase2-check.sh` |
+
+**pre-commit** (fast, staged files):
+
+- `gitleaks` — secret scan
+- `check-yaml` — YAML syntax
+- `ansible-lint` — `images/config/ansible/` only
+- `terraform_fmt` — rewrite `.tf` / `.tfvars` (gates use `terraform fmt -check`)
+- `packer_fmt` — rewrite `.pkr.hcl` (gate 6 uses `packer fmt -check`)
+
+**`make check`** (authoritative integration ladder):
+
+- Gates 2–3 duplicate Ansible checks at repo scope (catches bypassed commits)
+- Gates 4–8: fmt **check**, validate, trivy, plan/apply
+- Gate 6: packer validate + build
+- Gates 9–12: EICE, bootstrap, node Ready, smoke pod
+
+**Workflow** (loops → commit):
+
+```text
+Loop 1:  edit → make check (or preset) until green
+Loop 2:  you review constraints / architecture
+Commit:  pre-commit hygiene → git commit
+         (hooks run on commit if you ran pre-commit install)
+Optional: make pre-commit   # whole-tree dry-run before commit
+```
+
+**One-time setup** (inside `devbox shell`, from `phase2/`):
+
+```bash
+pre-commit install
+make pre-commit   # optional baseline
+```
+
+Git root is `vllm-deployment/` (monorepo); hook `files:` patterns use the `phase2/` prefix. Run install from `phase2/` so pre-commit picks up this config file.
+
+Homelab reference: `~/DEV/k8s-homelab/.pre-commit-config.yaml` (YAML + gitleaks + ansible-lint only; phase2 adds fmt hooks).
+
+---
 
 ## Validation ladder — `make check` (the real work)
 
-Define `./scripts/phase2-check.sh` **before** heavy infra work. Run it only via **`make check`** so skip/run flags export correctly.
+Define `./scripts/phase2-check.sh` **before** heavy infra work. Run it via **`make check`** or a **preset** (preferred day-to-day):
 
-
-| Gate         | Check                                    | Proves                          |
-| ------------ | ---------------------------------------- | ------------------------------- |
-| Devbox       | pinned toolchain versions                | dev environment matches Loop 2  |
-| Ansible syntax | `ansible-playbook --syntax-check -i "default," ami.yaml` (from `images/config/ansible/`) | AMI playbook and roles parse |
-| Ansible lint | `ansible-lint ami.yaml` (from `images/config/ansible/`) | AMI roles follow ansible-lint rules |
-| TF static + plan (2–3) | `make cluster-infra-plan` (or `cluster-infra-validate` when `SKIP_TF_PLAN=1`) | cluster HCL sane; AWS shape coherent |
-| AMI apply (3a) | `make images-infra-deploy`      | builder infra applied           |
-| AMI artifact (3b) | base AMI in AWS (`describe-images`; or `make images-config-build` when `RUN_PACKER_BUILD=1`) | node image ready                |
-| Provision (4) | `make cluster-infra-deploy` (only when `RUN_CLUSTER_APPLY=1`) | EC2 / network / EICE exist      |
-| EICE SSH (5) | SSH to node via `aws ec2-instance-connect` / open-tunnel (devbox shell) | private node reachable |
-| Bootstrap (6) | `kubeadm-init.service` Result=success, journal `Bootstrap complete`, `kubelet` enabled (polls via EICE) | first-boot finished + reboot-safe |
-| Cluster (7)   | `kubectl` on node: 1 node Ready, all pods Running/Ready (polls via EICE) | schedulable cluster |
-| Smoke (8)     | nginx deployment `phase2-smoke-nginx` Ready 1/1 with pod IP (EICE kubectl on node) | workload path works |
-
-Skip flags: `make help` lists all `SKIP_*` / `RUN_*` variables.
-
-Skip Ansible syntax only: `make check SKIP_AMI_ANSIBLE_SYNTAX=1`
-
-Skip Ansible lint only: `make check SKIP_AMI_ANSIBLE_LINT=1`
-
-Gate 4 runs `make cluster-infra-deploy` only with `RUN_CLUSTER_APPLY=1`. Skip it with `SKIP_TF_APPLY=1`. Gate 5 (EICE SSH) runs when cluster outputs exist. Skip bootstrap/cluster/smoke (gates 6–8) with `SKIP_ANSIBLE=1` — ladder exits successfully after gate 5:
+| Preset | Use when | Gates |
+| ------ | -------- | ----- |
+| **`make check-cluster`** | Cluster exists; daily Loop 1 | 1, 9–12 |
+| **`make check-ami`** | AMI / Ansible iteration | 1–6 |
+| **`make check-full`** | Greenfield from scratch | 1–12 (+ `RUN_PACKER_BUILD` + `RUN_CLUSTER_APPLY`) |
+| `make check` | CI / full regression | 1–12 (skip any gate with `SKIP_GATE_*`) |
 
 ```bash
-make check RUN_CLUSTER_APPLY=1
-make check RUN_CLUSTER_APPLY=1 SKIP_ANSIBLE=1
-make check SKIP_TF_APPLY=1 SKIP_ANSIBLE=1
-make help    # all targets and flags
+make check-gates                                # list gates + skip flags
+make check-cluster                              # daily
+make check-ami RUN_PACKER_BUILD=1               # bake AMI if missing
+make check-full                                 # everything
 ```
 
-Skip cluster TF during AMI-only iteration: `make check SKIP_CLUSTER_TF=1`
+| Gate | Block | Check | Skip flag |
+| ---- | ----- | ----- | --------- |
+| 1 | — | Devbox toolchain | `SKIP_GATE_DEVBOX` |
+| 2 | AMI | Ansible syntax | `SKIP_GATE_AMI_ANSIBLE_SYNTAX` |
+| 3 | AMI | Ansible lint | `SKIP_GATE_AMI_ANSIBLE_LINT` |
+| 4 | AMI | `make images-infra-plan` | `SKIP_GATE_AMI_INFRA_PLAN` |
+| 5 | AMI | `make images-infra-apply` | `SKIP_GATE_AMI_INFRA_APPLY` |
+| 6 | AMI | AMI in AWS / Packer build | `SKIP_GATE_AMI_ARTIFACT` |
+| 7 | Cluster | `make cluster-infra-plan` | `SKIP_GATE_CLUSTER_INFRA_PLAN` |
+| 8 | Cluster | `make cluster-infra-apply` (`RUN_CLUSTER_APPLY=1`) | `SKIP_GATE_CLUSTER_INFRA_APPLY` |
+| 9 | Runtime | EICE SSH | `SKIP_GATE_SSH` |
+| 10 | Runtime | kubeadm-init + kubelet | `SKIP_GATE_BOOTSTRAP` |
+| 11 | Runtime | node Ready, system pods | `SKIP_GATE_NODE_READY` |
+| 12 | Runtime | nginx smoke pod | `SKIP_GATE_SMOKE` |
+
+Block shortcuts: `SKIP_GATE_AMI_BLOCK=1` (2–6), `SKIP_GATE_CLUSTER_BLOCK=1` (7–8), `SKIP_GATE_RUNTIME_BLOCK=1` (10–12).
+
+Examples:
+
+```bash
+make check-gates
+make check-cluster
+SKIP_GATE_SMOKE=1 make check-cluster    # gates 1, 9–11 only
+make check-full
+```
 
 
 **Done when:** `make check` exits 0.

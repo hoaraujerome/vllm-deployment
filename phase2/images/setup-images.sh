@@ -33,11 +33,12 @@ log() { echo "==> $*"; }
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") <plan|deploy|build|destroy>
+Usage: $(basename "$0") <plan|apply|deploy|build|destroy>
 
   plan     fmt + validate + trivy + terraform plan (AMI builder infra)
-  deploy   plan + terraform apply
-  build    deploy + packer build
+  apply    terraform apply + capture Packer network outputs
+  deploy   plan + apply
+  build    packer build (set SKIP_AMI_INFRA_DEPLOY=1 if apply gate already ran)
   destroy  terraform destroy (builder infra only)
 EOF
 }
@@ -137,6 +138,10 @@ capture_packer_network() {
 
 deploy_infra() {
   plan_infra
+  apply_infra
+}
+
+apply_infra() {
   if [[ "${SKIP_AMI_INFRA_DEPLOY:-}" == "1" ]]; then
     log "Terraform apply skipped — SKIP_AMI_INFRA_DEPLOY=1"
     return
@@ -168,7 +173,9 @@ run_packer_build() {
 }
 
 build_ami() {
-  deploy_infra
+  if [[ "${SKIP_AMI_INFRA_DEPLOY:-}" != "1" ]]; then
+    deploy_infra
+  fi
   if [[ "${SKIP_AMI_BUILDING:-}" == "1" ]]; then
     log "Packer build skipped — SKIP_AMI_BUILDING=1"
     return
@@ -197,6 +204,9 @@ main() {
   case "${argument}" in
     plan)
       plan_infra
+      ;;
+    apply)
+      apply_infra
       ;;
     deploy)
       deploy_infra

@@ -33,11 +33,12 @@ log() { echo "==> $*"; }
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") <plan|deploy|destroy|validate>
+Usage: $(basename "$0") <plan|apply|deploy|destroy|validate>
 
   plan     fmt + validate + trivy + terraform plan (cluster live)
+  apply    terraform apply (after plan gate; set RUN_CLUSTER_APPLY=1 in check)
   validate fmt + validate + trivy (no terraform plan)
-  deploy   plan + terraform apply
+  deploy   plan + apply
   destroy  terraform destroy (cluster infra only)
 EOF
 }
@@ -132,6 +133,10 @@ run_terraform_apply() {
 
 deploy_infra() {
   plan_infra
+  apply_infra
+}
+
+apply_infra() {
   run_terraform_apply
 }
 
@@ -163,6 +168,9 @@ main() {
       validate_modules
       validate_live
       run_trivy
+      ;;
+    apply)
+      apply_infra
       ;;
     deploy)
       deploy_infra

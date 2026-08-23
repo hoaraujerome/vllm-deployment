@@ -2,23 +2,24 @@
 # Phase 2 validation ladder — functional Kubernetes cluster on AWS.
 #
 # Prefer the Makefile entrypoint:
-#   make check
-#   make check SKIP_TF_APPLY=1 SKIP_ANSIBLE=1
+#   make check-gates
+#   make check-cluster
 #
 # This script invokes make targets only — never setup-images.sh or setup-cluster.sh.
 # Flags are exported from the Makefile and pass through to setup scripts via make recipes.
 #
-# Gates:
-#   0. Devbox        — pinned toolchain
-#   1. Ansible syntax / 1b. lint — AMI bake playbook
-#   2–3. Cluster TF  — make cluster-infra-plan (or cluster-infra-validate)
-#   3a. AMI apply    — make images-infra-deploy
-#   3b. AMI artifact — AMI in AWS (or make images-config-build when RUN_PACKER_BUILD=1)
-#   4. Provision     — make cluster-infra-deploy (RUN_CLUSTER_APPLY=1)
-#   5. EICE SSH      — SSH to private node via EC2 Instance Connect Endpoint
-#   6. Bootstrap     — kubeadm-init.service finished successfully
-#   7. Cluster       — node Ready, system pods healthy (kubectl on node)
-#   8. Smoke         — nginx workload Ready on node (kubectl over EICE)
+# Gates (make check-gates):
+#   1  Devbox
+#   AMI block:
+#   2  Ansible syntax    3  Ansible lint
+#   4  AMI infra plan     5  AMI infra apply    6  AMI artifact (build if RUN_PACKER_BUILD=1)
+#   Cluster block:
+#   7  Cluster infra plan  8  Cluster infra apply (RUN_CLUSTER_APPLY=1)
+#   Runtime:
+#   9  SSH   10  Bootstrap   11  Node ready   12  Smoke
+#
+# Skip: SKIP_GATE_<name>=1 — see make check-gates. Block shortcuts: SKIP_GATE_AMI_BLOCK,
+#   SKIP_GATE_CLUSTER_BLOCK, SKIP_GATE_RUNTIME_BLOCK.
 
 set -euo pipefail
 
@@ -49,6 +50,35 @@ CLUSTER_EICE_ID=""
 info() { echo "==> $*"; }
 fail() { echo "ERROR: $*" >&2; exit 1; }
 
+gate_skip() {
+  local flag="$1"
+  local label="$2"
+  if [[ "${!flag:-}" == "1" ]]; then
+    info "Gate ${label} (skipped — ${flag}=1)"
+    return 0
+  fi
+  return 1
+}
+
+apply_block_skip_flags() {
+  if [[ "${SKIP_GATE_AMI_BLOCK:-}" == "1" ]]; then
+    export SKIP_GATE_AMI_ANSIBLE_SYNTAX=1
+    export SKIP_GATE_AMI_ANSIBLE_LINT=1
+    export SKIP_GATE_AMI_INFRA_PLAN=1
+    export SKIP_GATE_AMI_INFRA_APPLY=1
+    export SKIP_GATE_AMI_ARTIFACT=1
+  fi
+  if [[ "${SKIP_GATE_CLUSTER_BLOCK:-}" == "1" ]]; then
+    export SKIP_GATE_CLUSTER_INFRA_PLAN=1
+    export SKIP_GATE_CLUSTER_INFRA_APPLY=1
+  fi
+  if [[ "${SKIP_GATE_RUNTIME_BLOCK:-}" == "1" ]]; then
+    export SKIP_GATE_BOOTSTRAP=1
+    export SKIP_GATE_NODE_READY=1
+    export SKIP_GATE_SMOKE=1
+  fi
+}
+
 run_make() {
   "${MAKE}" -C "${PHASE2_DIR}" "$@"
 }
@@ -67,7 +97,8 @@ require_version() {
 }
 
 gate_devbox() {
-  info "Gate: devbox toolchain"
+  gate_skip SKIP_GATE_DEVBOX "1: devbox toolchain" && return
+  info "Gate 1: devbox toolchain"
   require_cmd make
   require_cmd terraform
   require_cmd packer
@@ -91,11 +122,8 @@ gate_devbox() {
 }
 
 gate_ansible_syntax() {
-  if [[ "${SKIP_AMI_ANSIBLE_SYNTAX:-}" == "1" ]]; then
-    info "Gate: Ansible syntax (skipped — SKIP_AMI_ANSIBLE_SYNTAX=1)"
-    return
-  fi
-  info "Gate: Ansible syntax (AMI bake)"
+  gate_skip SKIP_GATE_AMI_ANSIBLE_SYNTAX "2: AMI Ansible syntax" && return
+  info "Gate 2: AMI Ansible syntax"
   if [[ ! -f "$AMI_PLAYBOOK" ]]; then
     fail "AMI playbook not found at ${AMI_PLAYBOOK}"
   fi
@@ -106,11 +134,8 @@ gate_ansible_syntax() {
 }
 
 gate_ansible_lint() {
-  if [[ "${SKIP_AMI_ANSIBLE_LINT:-}" == "1" ]]; then
-    info "Gate: Ansible lint (skipped — SKIP_AMI_ANSIBLE_LINT=1)"
-    return
-  fi
-  info "Gate: Ansible lint (AMI bake)"
+  gate_skip SKIP_GATE_AMI_ANSIBLE_LINT "3: AMI Ansible lint" && return
+  info "Gate 3: AMI Ansible lint"
   if [[ ! -f "$AMI_PLAYBOOK" ]]; then
     fail "AMI playbook not found at ${AMI_PLAYBOOK}"
   fi
@@ -128,18 +153,47 @@ gate_ansible_lint() {
   )
 }
 
-gate_cluster_tf() {
-  if [[ "${SKIP_CLUSTER_TF:-}" == "1" ]]; then
-    info "Gate: cluster TF (skipped — SKIP_CLUSTER_TF=1)"
+gate_ami_infra_plan() {
+  gate_skip SKIP_GATE_AMI_INFRA_PLAN "4: AMI infra plan" && return
+  info "Gate 4: AMI infra plan"
+  run_make images-infra-plan
+}
+
+gate_ami_infra_apply() {
+  gate_skip SKIP_GATE_AMI_INFRA_APPLY "5: AMI infra apply" && return
+  info "Gate 5: AMI infra apply"
+  run_make images-infra-apply
+}
+
+gate_ami_artifact() {
+  gate_skip SKIP_GATE_AMI_ARTIFACT "6: AMI artifact" && return
+  info "Gate 6: AMI artifact"
+
+  local count image_id
+  count="$(ami_image_count)"
+  if [[ "$count" != "0" && "$count" != "None" ]]; then
+    image_id="$(ami_newest_image_id)"
+    info "AMI artifact: base AMI found — ${image_id} (prefix ${AMI_NAME_PREFIX}*, ${AWS_REGION})"
     return
   fi
-  if [[ "${SKIP_TF_PLAN:-}" == "1" ]]; then
-    info "Gate: cluster TF validate (2 — plan skipped, SKIP_TF_PLAN=1)"
-    run_make cluster-infra-validate
+
+  if [[ "${RUN_PACKER_BUILD:-}" == "1" ]]; then
+    if [[ "${SKIP_AMI_BUILDING:-}" == "1" ]]; then
+      fail "AMI missing but RUN_PACKER_BUILD=1 and SKIP_AMI_BUILDING=1 — unset one of them"
+    fi
+    info "AMI artifact: no AMI found — running make images-config-build (SKIP_AMI_INFRA_DEPLOY=1)"
+    export SKIP_AMI_INFRA_DEPLOY=1
+    run_make images-config-build
+    count="$(ami_image_count)"
+    if [[ "$count" == "0" || "$count" == "None" ]]; then
+      fail "images-config-build finished but no available AMI matching ${AMI_NAME_PREFIX}* in ${AWS_REGION}"
+    fi
+    image_id="$(ami_newest_image_id)"
+    info "AMI artifact: base AMI built — ${image_id}"
     return
   fi
-  info "Gate: cluster TF plan (2–3)"
-  run_make cluster-infra-plan
+
+  fail "no available AMI matching ${AMI_NAME_PREFIX}* in ${AWS_REGION} — run: make check-full (or RUN_PACKER_BUILD=1)"
 }
 
 ami_image_count() {
@@ -160,71 +214,21 @@ ami_newest_image_id() {
     --output text 2>/dev/null || echo "None"
 }
 
-gate_ami_plan() {
-  if [[ "${SKIP_AMI_PLAN:-}" == "1" ]]; then
-    info "Gate: AMI apply (skipped — SKIP_AMI_PLAN=1)"
-    return
-  fi
-  info "Gate: AMI apply (3a)"
-  run_make images-infra-deploy
+gate_cluster_infra_plan() {
+  gate_skip SKIP_GATE_CLUSTER_INFRA_PLAN "7: cluster infra plan" && return
+  info "Gate 7: cluster infra plan"
+  run_make cluster-infra-plan
 }
 
-gate_ami_artifact() {
-  if [[ "${SKIP_AMI_ARTIFACT:-}" == "1" ]]; then
-    info "Gate: AMI artifact (skipped — SKIP_AMI_ARTIFACT=1)"
-    return
-  fi
-  info "Gate: AMI artifact (3b)"
-
-  local count image_id
-  count="$(ami_image_count)"
-  if [[ "$count" != "0" && "$count" != "None" ]]; then
-    image_id="$(ami_newest_image_id)"
-    info "AMI artifact: base AMI found — ${image_id} (prefix ${AMI_NAME_PREFIX}*, ${AWS_REGION})"
-    return
-  fi
-
-  if [[ "${RUN_PACKER_BUILD:-}" == "1" ]]; then
-    if [[ "${SKIP_AMI_BUILDING:-}" == "1" ]]; then
-      fail "AMI missing but RUN_PACKER_BUILD=1 and SKIP_AMI_BUILDING=1 — unset one of them"
-    fi
-    info "AMI artifact: no AMI found — running make images-config-build"
-    run_make images-config-build
-    count="$(ami_image_count)"
-    if [[ "$count" == "0" || "$count" == "None" ]]; then
-      fail "images-config-build finished but no available AMI matching ${AMI_NAME_PREFIX}* in ${AWS_REGION}"
-    fi
-    image_id="$(ami_newest_image_id)"
-    info "AMI artifact: base AMI built — ${image_id}"
-    return
-  fi
-
-  fail "no available AMI matching ${AMI_NAME_PREFIX}* in ${AWS_REGION} — run: make check RUN_PACKER_BUILD=1 (or make images-config-build)"
-}
-
-gate_ami() {
-  if [[ "${SKIP_AMI:-}" == "1" ]]; then
-    info "Gate: AMI (skipped — SKIP_AMI=1)"
-    return
-  fi
-  gate_ami_plan
-  gate_ami_artifact
-}
-
-gate_tf_apply() {
-  if [[ "${SKIP_TF_APPLY:-}" == "1" ]]; then
-    info "Gate: provision (skipped — SKIP_TF_APPLY=1)"
-    return
-  fi
-  info "Gate: provision (4)"
-
+gate_cluster_infra_apply() {
+  gate_skip SKIP_GATE_CLUSTER_INFRA_APPLY "8: cluster infra apply" && return
+  info "Gate 8: cluster infra apply"
   if [[ "${RUN_CLUSTER_APPLY:-}" == "1" ]]; then
-    run_make cluster-infra-deploy
+    run_make cluster-infra-apply
     info "Cluster live: terraform apply complete"
     return
   fi
-
-  fail "cluster live not applied — run: make check RUN_CLUSTER_APPLY=1 (or make cluster-infra-deploy)"
+  fail "cluster not applied — run: make check-full (or RUN_CLUSTER_APPLY=1)"
 }
 
 cluster_tf_output() {
@@ -333,7 +337,7 @@ if [[ "${kubelet_enabled}" != "enabled" ]]; then
   exit 1
 fi
 
-echo "gate6-ok"
+echo "gate10-ok"
 '
 }
 
@@ -384,7 +388,7 @@ if [[ -n "${bad_phase}" ]]; then
   exit 1
 fi
 
-echo "gate7-ok"
+echo "gate11-ok"
 kubectl get nodes -o wide
 kubectl get pods -A
 '
@@ -446,7 +450,7 @@ if [[ -z \"\${pod_ip}\" || \"\${pod_ip}\" == \"<none>\" ]]; then
   exit 1
 fi
 
-echo \"gate8-ok pod_ip=\${pod_ip}\"
+echo \"gate12-ok pod_ip=\${pod_ip}\"
 kubectl get deployment \"\${deploy}\" -n \"\${ns}\"
 kubectl get pods -n \"\${ns}\" -l \"app=\${deploy}\" -o wide
 "
@@ -477,12 +481,9 @@ poll_until() {
 }
 
 gate_eice_ssh() {
-  if [[ "${SKIP_EICE_SSH:-}" == "1" ]]; then
-    info "Gate: EICE SSH (skipped — SKIP_EICE_SSH=1)"
-    return
-  fi
+  gate_skip SKIP_GATE_SSH "9: EICE SSH" && return
 
-  info "Gate: EICE SSH (5)"
+  info "Gate 9: EICE SSH"
   require_cluster_ssh
 
   info "EICE SSH: ${EICE_SSH_USER}@${CLUSTER_INSTANCE_ID} via ${CLUSTER_EICE_ID}"
@@ -499,33 +500,24 @@ gate_eice_ssh() {
 }
 
 gate_bootstrap() {
-  if [[ "${SKIP_ANSIBLE:-}" == "1" ]]; then
-    info "Gate: bootstrap (skipped — SKIP_ANSIBLE=1)"
-    return
-  fi
+  gate_skip SKIP_GATE_BOOTSTRAP "10: bootstrap" && return
 
-  info "Gate: bootstrap (6)"
+  info "Gate 10: bootstrap"
   require_cluster_ssh
   poll_until "Bootstrap (kubeadm-init.service)" "${CLUSTER_BOOTSTRAP_TIMEOUT}" "${CLUSTER_BOOTSTRAP_INTERVAL}" remote_bootstrap_ok
 }
 
-gate_cluster() {
-  if [[ "${SKIP_ANSIBLE:-}" == "1" ]]; then
-    info "Gate: cluster (skipped — SKIP_ANSIBLE=1)"
-    return
-  fi
+gate_node_ready() {
+  gate_skip SKIP_GATE_NODE_READY "11: node ready" && return
 
-  info "Gate: cluster health (7)"
+  info "Gate 11: node ready"
   require_cluster_ssh
   poll_until "Cluster (node Ready + system pods)" "${CLUSTER_HEALTH_TIMEOUT}" "${CLUSTER_HEALTH_INTERVAL}" remote_cluster_healthy
 }
 
 gate_smoke() {
-  if [[ "${SKIP_ANSIBLE:-}" == "1" || "${SKIP_SMOKE:-}" == "1" ]]; then
-    info "Gate: smoke (skipped — SKIP_SMOKE=1 or SKIP_ANSIBLE=1)"
-    return
-  fi
-  info "Gate: smoke (8)"
+  gate_skip SKIP_GATE_SMOKE "12: smoke" && return
+  info "Gate 12: smoke"
   require_cluster_ssh
 
   local ensure_out
@@ -546,25 +538,63 @@ main() {
   export AWS_DEFAULT_REGION="${AWS_REGION}"
   export AWS_REGION
 
+  apply_block_skip_flags
+
   gate_devbox
   gate_ansible_syntax
   gate_ansible_lint
-  gate_cluster_tf
-  gate_ami
-  gate_tf_apply
+  gate_ami_infra_plan
+  gate_ami_infra_apply
+  gate_ami_artifact
+  gate_cluster_infra_plan
+  gate_cluster_infra_apply
   gate_eice_ssh
-  if [[ "${SKIP_ANSIBLE:-}" == "1" ]]; then
-    info "Ladder complete through gate 5 (bootstrap, cluster, smoke skipped — SKIP_ANSIBLE=1)"
-    exit 0
-  fi
   gate_bootstrap
-  gate_cluster
+  gate_node_ready
   gate_smoke
-  if [[ "${SKIP_SMOKE:-}" == "1" ]]; then
-    info "Ladder complete through gate 7 (smoke skipped — SKIP_SMOKE=1)"
+  if [[ "${SKIP_GATE_SMOKE:-}" == "1" ]]; then
+    info "Ladder complete through gate 11"
   else
-    info "Ladder complete through gate 8 (smoke ok)"
+    info "Ladder complete (gate 12 smoke ok)"
   fi
 }
 
-main "$@"
+list_gates() {
+  cat <<'EOF'
+Phase 2 validation gates (make check → phase2-check.sh)
+
+  Gate   Block     Name                 Skip flag
+  ----   -----     ----                 ---------
+  1                Devbox               SKIP_GATE_DEVBOX
+  2      AMI       Ansible syntax       SKIP_GATE_AMI_ANSIBLE_SYNTAX
+  3      AMI       Ansible lint         SKIP_GATE_AMI_ANSIBLE_LINT
+  4      AMI       AMI infra plan       SKIP_GATE_AMI_INFRA_PLAN
+  5      AMI       AMI infra apply      SKIP_GATE_AMI_INFRA_APPLY
+  6      AMI       AMI artifact/build   SKIP_GATE_AMI_ARTIFACT
+  7      Cluster   Cluster infra plan   SKIP_GATE_CLUSTER_INFRA_PLAN
+  8      Cluster   Cluster infra apply  SKIP_GATE_CLUSTER_INFRA_APPLY
+  9      Runtime   EICE SSH             SKIP_GATE_SSH
+  10     Runtime   Bootstrap            SKIP_GATE_BOOTSTRAP
+  11     Runtime   Node ready           SKIP_GATE_NODE_READY
+  12     Runtime   Smoke (nginx)        SKIP_GATE_SMOKE
+
+Block shortcuts:
+  SKIP_GATE_AMI_BLOCK=1       gates 2–6
+  SKIP_GATE_CLUSTER_BLOCK=1   gates 7–8
+  SKIP_GATE_RUNTIME_BLOCK=1   gates 10–12 (gate 9 SSH still runs)
+
+Presets:
+  make check-cluster      skip AMI + cluster blocks; gates 1, 9–12
+  make check-ami          gates 1–6 only
+  make check-full         all gates + RUN_PACKER_BUILD + RUN_CLUSTER_APPLY
+EOF
+}
+
+case "${1:-}" in
+  --list-gates)
+    list_gates
+    ;;
+  *)
+    main "$@"
+    ;;
+esac
