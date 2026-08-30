@@ -1,0 +1,11 @@
+# Phase 3 WireGuard provisioning — Terraform variables
+
+# AWS
+aws_region  = "ca-central-1"
+environment = "prod"
+
+# WireGuard EC2
+wireguard_instance_type = "t4g.nano"
+ssh_public_key_path     = "~/.ssh/id_rsa_k8s_homelab.pub"
+
+# Note: home_ip_cidr removed — now fetched dynamically via data.http.current_ip

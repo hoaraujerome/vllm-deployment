@@ -98,8 +98,10 @@ Scope:    VPN only — no vLLM, no ingress
 - **Tunnel:** **split** — route only VPC CIDR (`10.60.0.0/16`) over VPN; do not full-tunnel all laptop traffic
 - **EICE:** **keep indefinitely** as break-glass — do not remove from Phase 2 TF in Phase 3
 - **Region / account:** same as Phase 2 — **ca-central-1**, sandbox account
+- **Terraform — module calls:** Live roots (`vpn/infra/main-account/ca-central-1/prod/`) orchestrate via module calls, not inline resources; split `main.*` files by responsibility (e.g., `main.network.tf`, `main.wireguard.tf`)
+- **Terraform — modules:** Phase 3 VPN modules live under `phase3/vpn/infra/modules/`; defer extracting to shared `phase2/modules/infra/` until 3+ similar use cases exist (rule of three)
 - **Terraform — Phase 2 touch:** **outputs only** — `vpc_id`, `nat_gateway_subnet_id`, `k8s_node_security_group_id`, `k8s_node_private_ip` (small additive MR to Phase 2 cluster live root)
-- **Terraform — Phase 3 owns:** WireGuard EC2, EIP, WireGuard SG, K8s SG ingress rule (TCP 6443 from WireGuard SG) via `terraform_remote_state` (or copied outputs for v1)
+- **Terraform — Phase 3 owns:** WireGuard EC2, EIP, WireGuard SG, K8s SG ingress rule (TCP 6443 from WireGuard SG) in the VPN live root; discover Phase 2 resources via AWS **data sources** (not `terraform_remote_state`)
 - **Terraform — variables:** `nullable = false` on every `variable` (same rule as Phase 2)
 - **Terraform — AWS provider:** `hashicorp/aws` ****`~> 6.60.0` — match Phase 2 pins
 - **Configuration:** WireGuard server bootstrap in `phase3/configuration/` (cloud-init or Ansible) — **not** in Phase 2 Packer AMI
@@ -199,21 +201,48 @@ Your laptop
 
 ## Terraform layout
 
-Phase 3 provisioning reads Phase 2 cluster state; Phase 2 cluster live root gains outputs only.
-
+Phase 3 VPN live root follows Gruntwork/Terragrunt conventions, orchestrating infrastructure through module calls rather than inline resources.
 
 | Purpose                          | Path                                                   | State                                         |
 | -------------------------------- | ------------------------------------------------------ | --------------------------------------------- |
 | Phase 2 cluster (frozen factory) | `phase2/cluster/infra/main-account/ca-central-1/prod/` | persistent — **outputs extended for Phase 3** |
-| Phase 3 WireGuard live           | `phase3/provisioning/terraform/`                       | persistent while VPN exists                   |
+| Phase 3 WireGuard live           | `phase3/vpn/infra/main-account/ca-central-1/prod/`     | persistent while VPN exists                   |
+| Phase 3 VPN modules              | `phase3/vpn/infra/modules/`                            | local to Phase 3                              |
+| Shared infrastructure modules    | `phase2/modules/infra/`                                | VPC, NAT, IGW (Phase 2 only for now)         |
 | WireGuard bootstrap              | `phase3/configuration/`                                | n/a                                           |
 
 
-**Split:**
+**Module organization:**
 
-1. **Phase 2** — add outputs: `vpc_id`, `nat_gateway_subnet_id`, `k8s_node_security_group_id`, `k8s_node_private_ip`.
-2. **Phase 3** — WireGuard EC2 + EIP + SGs via `terraform_remote_state`.
-3. **K8s SG ingress** — Phase 3 TF adds rule; Phase 2 remains source of truth for the node SG resource.
+Phase 3 modules remain local (`phase3/vpn/infra/modules/`) per the **rule of three** — wait for 3+ similar occurrences before extracting to shared `phase2/modules/infra/`:
+
+| Module | Location | Used by |
+|--------|----------|---------|
+| `compute-sshpublickey` | `phase2/cluster/infra/modules/` | Phase 2 |
+| `compute-sshpublickey` | `phase3/vpn/infra/modules/` | Phase 3 (duplicate for now) |
+| `network-securitygroup` | `phase2/cluster/infra/modules/` | Phase 2 |
+| `network-securitygroup` | `phase3/vpn/infra/modules/` | Phase 3 (duplicate for now) |
+| `network-securitygrouprules` | `phase2/cluster/infra/modules/` | Phase 2 |
+| `network-securitygrouprules` | `phase3/vpn/infra/modules/` | Phase 3 (duplicate for now) |
+| `compute-ec2` | `phase2/cluster/infra/modules/` | Phase 2 (kubeadm-aware) |
+| `compute-ec2-ubuntu2604` | `phase3/vpn/infra/modules/` | Phase 3 (Ubuntu 26.04 ARM64) |
+| `network-eip` | `phase3/vpn/infra/modules/` | Phase 3 |
+| `network-vpc`, `network-natgateway`, etc. | `phase2/modules/infra/` | Phase 2 only |
+
+When a third use case emerges, extract duplicated modules to `phase2/modules/infra/`.
+
+**Live root structure (Phase 3):**
+
+```text
+phase3/vpn/infra/main-account/ca-central-1/prod/
+├── main.network.tf      # Phase 2 discovery (data sources)
+├── main.wireguard.tf    # WireGuard VPN (module calls)
+├── locals.tf            # Tag prefix, ports, protocols
+├── variables.tf         # Live root inputs
+├── outputs.tf           # Exposed values
+├── provider.tf          # AWS provider + default tags
+└── versions.tf          # Terraform + provider versions
+```
 
 ---
 
@@ -222,18 +251,32 @@ Phase 3 provisioning reads Phase 2 cluster state; Phase 2 cluster live root gain
 ## Repo layout
 
 ```text
-phase2/                          # FROZEN — cluster factory (outputs MR only)
-├── cluster/infra/...            # additive outputs for Phase 3
-├── Makefile                     # check-cluster, cluster-ssh (break-glass)
+phase2/
+├── cluster/infra/
+│   ├── main-account/ca-central-1/prod/  # Cluster live root (module calls)
+│   └── modules/                         # Cluster-specific modules (EICE, kubeadm EC2, SG, SSH key)
+├── modules/infra/                       # Shared infrastructure (VPC, NAT, IGW only for now)
+│   ├── network-vpc/
+│   ├── network-natgateway/
+│   └── ...
+├── Makefile                             # check-cluster, cluster-ssh
 └── scripts/phase2-check.sh
 
-phase3/                          # access layer
-├── provisioning/
-│   └── terraform/               # WireGuard EC2, EIP, SGs; remote state → Phase 2
-├── configuration/               # wg0, cloud-init, client profile (secrets gitignored)
-├── scripts/
-│   └── phase3-check.sh          # done-when ladder
-└── Makefile                     # optional: check, fetch-kubeconfig
+phase3/
+├── vpn/infra/
+│   ├── main-account/ca-central-1/prod/  # VPN live root (module calls)
+│   │   ├── main.network.tf              # Phase 2 discovery
+│   │   ├── main.wireguard.tf            # WireGuard resources
+│   │   └── ...
+│   └── modules/                         # Phase 3 VPN modules (local, not shared yet)
+│       ├── compute-sshpublickey/
+│       ├── compute-ec2-ubuntu2604/
+│       ├── network-securitygroup/
+│       ├── network-securitygrouprules/
+│       └── network-eip/
+├── configuration/                        # wg0, cloud-init, client profile
+├── scripts/phase3-check.sh
+└── Makefile                              # check-provisioning
 ```
 
 ---
@@ -277,7 +320,8 @@ KUBECONFIG=~/.kube/vllm-phase2.conf ./scripts/phase3-check.sh
 2. Phase 2 outputs (tiny additive MR)
    └── vpc_id, subnet ids, k8s SG id, node private IP
 
-3. Phase 3 provisioning (Terraform)
+3. Phase 3 VPN live root (Terraform)
+   ├── path: vpn/infra/main-account/ca-central-1/prod/
    ├── WireGuard EC2 in nat-gateway subnet + EIP
    ├── WireGuard SG (UDP 51820 from home IP)
    └── K8s SG ingress: 6443 from WireGuard SG
@@ -376,7 +420,7 @@ Fix only what the checks require.
 - **Subnet:** **Option A** — reuse Phase 2 `nat-gateway` subnet (`10.60.2.0/24`); no new subnet for MVP
 - **Tunnel:** **split** — route `10.60.0.0/16` over VPN only
 - **EICE:** **keep indefinitely** — primary admin path moves to WireGuard; EICE remains break-glass
-- **Terraform:** Phase 3 `provisioning/terraform/` owns WireGuard; Phase 2 cluster live root adds **outputs only**
+- **Terraform:** Phase 3 `vpn/infra/main-account/ca-central-1/prod/` owns WireGuard; Phase 2 cluster live root adds **outputs only**
 - **K8s SG rule:** Phase 3 adds `aws_vpc_security_group_ingress_rule` referencing Phase 2 node SG id
 - **Kubeconfig:** laptop file `~/.kube/vllm-phase2.conf`; server URL = node private IP; one-time fetch via EICE OK
 - **Validation:** `phase3-check.sh` from laptop; Phase 2 `make check-cluster` for regression

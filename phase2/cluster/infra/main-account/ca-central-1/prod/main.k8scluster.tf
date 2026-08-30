@@ -76,6 +76,7 @@ module "k8s_node_security_group_rules" {
   }
 }
 
+
 module "ec2_instance_connect_endpoint" {
   source = "../../../modules/network-ec2-instance-connect-endpoint"
 
