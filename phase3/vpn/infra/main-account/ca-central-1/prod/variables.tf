@@ -24,3 +24,10 @@ variable "ssh_public_key_path" {
   type        = string
   nullable    = false
 }
+
+variable "ssh_private_key_path" {
+  description = "Path to SSH private key for WireGuard EC2 access (for scripts/automation)."
+  type        = string
+  default     = "~/.ssh/id_rsa_k8s_homelab"
+  nullable    = false
+}

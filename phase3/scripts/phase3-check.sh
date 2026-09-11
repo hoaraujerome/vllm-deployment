@@ -130,29 +130,44 @@ gate_infra_apply() {
 gate_vpn() {
   gate_skip SKIP_GATE_VPN "4: VPN (WireGuard interface up)" && return
   info "Gate 4: VPN (WireGuard interface up)"
-  if ! wg show "${WG_INTERFACE}" >/dev/null 2>&1; then
-    if ! wg show >/dev/null 2>&1; then
-      fail "WireGuard interface not up — connect VPN (wg show ${WG_INTERFACE} failed; override WG_INTERFACE if needed)"
-    fi
-    info "WireGuard active (default interface; WG_INTERFACE=${WG_INTERFACE} not found)"
+
+  local wg_ifs active_if
+  wg_ifs="$(wg show interfaces 2>/dev/null || true)"
+  if [[ -z "${wg_ifs// }" ]]; then
+    fail "WireGuard interface not up — connect VPN (wg show interfaces returned nothing)"
   fi
-  wg show "${WG_INTERFACE}" 2>/dev/null || wg show
+
+  if wg show "${WG_INTERFACE}" >/dev/null 2>&1; then
+    active_if="${WG_INTERFACE}"
+  else
+    active_if="${wg_ifs%% *}"
+    info "WireGuard active on ${active_if} (WG_INTERFACE=${WG_INTERFACE} not found; override WG_INTERFACE if needed)"
+  fi
+
+  if wg show "${active_if}" 2>/dev/null; then
+    :
+  elif sudo -n wg show "${active_if}" 2>/dev/null; then
+    :
+  else
+    info "WireGuard interface ${active_if} is up (run: sudo wg show ${active_if} for details)"
+  fi
 }
 
 gate_cluster() {
   gate_skip SKIP_GATE_CLUSTER "5: cluster (kubectl from laptop)" && return
   info "Gate 5: cluster (kubectl from laptop)"
-  require_path "${KUBECONFIG}" "copy kubeconfig to ${KUBECONFIG} (fetch admin.conf via EICE once)"
+  require_path "${KUBECONFIG}" "run: make fetch-kubeconfig (one-time WireGuard hop)"
+  grep -q '^apiVersion:' "${KUBECONFIG}" || fail "${KUBECONFIG} invalid — re-run: make fetch-kubeconfig"
   kubectl --kubeconfig="${KUBECONFIG}" get nodes
 }
 
 gate_eice_free() {
   gate_skip SKIP_GATE_EICE_FREE "6: EICE-free runtime path" && return
   info "Gate 6: EICE-free runtime path"
-  if grep -q 'ec2-instance-connect open-tunnel' "${BASH_SOURCE[0]}"; then
-    fail "phase3-check.sh must not call ec2-instance-connect for routine runtime gates"
-  fi
-  info "Runtime gates 4–6 use WireGuard + kubectl only (no EICE in this script)"
+  local eice_hits
+  eice_hits="$(grep -rl 'ec2-instance-connect open-tunnel' "${SCRIPT_DIR}/" --exclude="$(basename "${BASH_SOURCE[0]}")" 2>/dev/null || true)"
+  [[ -z "${eice_hits}" ]] || fail "phase3/scripts must not use ec2-instance-connect open-tunnel — use WireGuard hop (${eice_hits})"
+  info "Runtime gates 4–6 use WireGuard + kubectl only (no EICE in phase3 scripts)"
 }
 
 main() {

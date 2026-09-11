@@ -7,5 +7,6 @@ environment = "prod"
 # WireGuard EC2
 wireguard_instance_type = "t4g.nano"
 ssh_public_key_path     = "~/.ssh/id_rsa_k8s_homelab.pub"
+ssh_private_key_path    = "~/.ssh/id_rsa_k8s_homelab"  # for automation/scripts
 
 # Note: home_ip_cidr removed — now fetched dynamically via data.http.current_ip

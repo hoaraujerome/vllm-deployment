@@ -42,8 +42,6 @@ module "wireguard_sg_rules" {
     vpc_egress = {
       description = "Allow outbound to VPC CIDR"
       direction   = "outbound"
-      from_port   = 0
-      to_port     = 0
       ip_protocol = "-1"
       cidr_ipv4   = data.aws_vpc.phase2.cidr_block
     }
@@ -87,6 +85,24 @@ module "k8s_api_from_wireguard_rule" {
   }
 }
 
+# K8s node security group ingress rule (TCP 22 from WireGuard SG — kubeconfig fetch hop)
+module "k8s_ssh_from_wireguard_rule" {
+  source = "../../../modules/network-securitygrouprules"
+
+  tag_prefix        = local.tag_prefix
+  security_group_id = data.aws_security_group.k8s_node.id
+  rules = {
+    ssh_from_wireguard_ingress = {
+      description                  = "SSH from WireGuard EC2 (kubeconfig fetch hop)"
+      direction                    = "inbound"
+      from_port                    = local.ssh_port
+      to_port                      = local.ssh_port
+      ip_protocol                  = local.tcp_protocol
+      referenced_security_group_id = module.wireguard_sg.security_group_ids[local.wireguard_node_name]
+    }
+  }
+}
+
 module "wireguard" {
   source = "../../../modules/compute-ec2-ubuntu2604"
 
@@ -96,13 +112,7 @@ module "wireguard" {
   security_group_ids          = [module.wireguard_sg.security_group_ids[local.wireguard_node_name]]
   key_pair_name               = module.ssh_key.key_pair_name
 
-  # Placeholder user_data (cloud-init skipped per constraint)
-  user_data = <<-EOF
-    #!/bin/bash
-    # Phase 3 WireGuard bootstrap placeholder
-    # TODO: install wireguard, configure wg0, enable ip_forward
-    echo "WireGuard bootstrap placeholder" > /var/log/wireguard-init.log
-  EOF
+  user_data = file("${path.module}/../../../../../configuration/wireguard-server-cloud-init.yaml")
 
   tags = {
     Name = "${local.tag_prefix}${local.wireguard_node_name}"

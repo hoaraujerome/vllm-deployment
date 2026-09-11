@@ -38,4 +38,11 @@ resource "aws_instance" "this" {
   }
 
   tags = var.tags
+
+  # Terraform AWS provider drift bug: https://github.com/hashicorp/terraform-provider-aws/issues/47100
+  # aws_eip_association refresh can report associate_public_ip_address=true even
+  # when launch used false; the attribute is ForceNew and causes perpetual replace.
+  lifecycle {
+    ignore_changes = [associate_public_ip_address]
+  }
 }

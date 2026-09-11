@@ -10,7 +10,7 @@ Hands-on project to run [vLLM](https://docs.vllm.ai/) locally, then deploy it on
 | ----- | ---- | ------ | --- |
 | **1 — Local** | vLLM-Metal on Apple Silicon | Done | [phase1/README.md](phase1/README.md) |
 | **2 — Cluster** | kubeadm cluster on AWS (EICE, kubectl on node) | Done | [phase2/README.md](phase2/README.md) |
-| **3 — WireGuard** | VPN access — laptop kubectl replaces EICE | Planned | [phase3/README.md](phase3/README.md) |
+| **3 — WireGuard** | VPN access — laptop kubectl replaces EICE | Done | [phase3/README.md](phase3/README.md) |
 | **4 — vLLM deploy** | vLLM CPU; in-cluster API works | Planned | [phase4/README.md](phase4/README.md) |
 | **5 — GPU** | NVIDIA/CUDA | Planned | [phase5/README.md](phase5/README.md) |
 | **6 — Operate** | Expose externally; metrics | Planned | [phase6/README.md](phase6/README.md) |
@@ -38,5 +38,5 @@ vllm-deployment/
 ## Design notes
 
 - **Phase 2 ops:** kubectl on node only (homelab smoke-test style). Validated: `make check-full` and post-reboot `make check-cluster` (2026-08-23).
-- **Phase 3:** WireGuard unlocks laptop-native Helm/kubectl for Phase 4+.
+- **Phase 3:** WireGuard unlocks laptop-native Helm/kubectl for Phase 4+ (validated `make check-full`, 2026-09-11).
 - **Validation-driven:** each phase completes when its check script passes.

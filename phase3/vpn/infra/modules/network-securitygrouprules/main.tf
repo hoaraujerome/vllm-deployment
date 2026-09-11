@@ -4,8 +4,8 @@ resource "aws_vpc_security_group_ingress_rule" "this" {
   }
 
   description                  = each.value.description
-  from_port                    = each.value.from_port
-  to_port                      = each.value.to_port
+  from_port                    = each.value.ip_protocol == "-1" ? null : each.value.from_port
+  to_port                      = each.value.ip_protocol == "-1" ? null : each.value.to_port
   ip_protocol                  = each.value.ip_protocol
   cidr_ipv4                    = each.value.cidr_ipv4
   referenced_security_group_id = each.value.referenced_security_group_id
@@ -22,8 +22,8 @@ resource "aws_vpc_security_group_egress_rule" "this" {
   }
 
   description                  = each.value.description
-  from_port                    = each.value.from_port
-  to_port                      = each.value.to_port
+  from_port                    = each.value.ip_protocol == "-1" ? null : each.value.from_port
+  to_port                      = each.value.ip_protocol == "-1" ? null : each.value.to_port
   ip_protocol                  = each.value.ip_protocol
   cidr_ipv4                    = each.value.cidr_ipv4
   referenced_security_group_id = each.value.referenced_security_group_id

@@ -1,0 +1,2 @@
+# Ignore all WireGuard client configs
+*.conf

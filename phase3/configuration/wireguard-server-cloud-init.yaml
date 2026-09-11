@@ -1,0 +1,63 @@
+#cloud-config
+# Phase 3 WireGuard server bootstrap
+# Applied via EC2 user_data to configure WireGuard VPN on Ubuntu 26.04 ARM64
+
+package_update: true
+package_upgrade: false
+
+packages:
+  - wireguard
+  - wireguard-tools
+
+write_files:
+  - path: /etc/sysctl.d/99-wireguard.conf
+    content: |
+      net.ipv4.ip_forward=1
+    permissions: '0644'
+
+  - path: /root/setup-wireguard.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+      
+      # Generate server keys if they don't exist
+      if [[ ! -f /etc/wireguard/server.key ]]; then
+        wg genkey | tee /etc/wireguard/server.key | wg pubkey > /etc/wireguard/server.pub
+        chmod 600 /etc/wireguard/server.key
+        chmod 644 /etc/wireguard/server.pub
+      fi
+      
+      SERVER_PRIVATE_KEY="$(cat /etc/wireguard/server.key)"
+      
+      # Create wg0.conf
+      cat > /etc/wireguard/wg0.conf <<EOF
+      [Interface]
+      PrivateKey = ${SERVER_PRIVATE_KEY}
+      Address = 10.8.0.1/24
+      ListenPort = 51820
+      
+      # Forward traffic between wg0 and VPC (ens5 is default AWS NIC)
+      PostUp   = iptables -A FORWARD -i wg0 -j ACCEPT; iptables -t nat -A POSTROUTING -o ens5 -j MASQUERADE
+      PostDown = iptables -D FORWARD -i wg0 -j ACCEPT; iptables -t nat -D POSTROUTING -o ens5 -j MASQUERADE
+      
+      # Placeholder for client peers - add manually or via automation
+      # [Peer]
+      # PublicKey = <laptop-public-key>
+      # AllowedIPs = 10.8.0.2/32
+      EOF
+      
+      chmod 600 /etc/wireguard/wg0.conf
+      
+      # Enable and start WireGuard
+      systemctl enable wg-quick@wg0
+      systemctl start wg-quick@wg0
+      
+      echo "WireGuard server configured successfully" > /var/log/wireguard-init.log
+      echo "Server public key: $(cat /etc/wireguard/server.pub)" >> /var/log/wireguard-init.log
+
+runcmd:
+  - sysctl -p /etc/sysctl.d/99-wireguard.conf
+  - /root/setup-wireguard.sh
+
+final_message: "WireGuard server bootstrap complete"

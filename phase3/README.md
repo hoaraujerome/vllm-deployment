@@ -1,6 +1,6 @@
 # Phase 3 — WireGuard access
 
-**Status:** not started (Loop 2 frozen 2026-08-23)
+**Status:** done (`make check-full RUN_PROVISIONING_APPLY=1` green, 2026-09-11)
 
 **Prerequisite:** [Phase 2](../phase2/README.md) — functional K8s cluster; `make check-cluster` exit 0
 
@@ -12,7 +12,7 @@
 
 ## Done when
 
-`./scripts/phase3-check.sh` exits 0 — **kubectl from your laptop** reaches the cluster over WireGuard (no EICE tunnel required for routine ops).
+`make check-full RUN_PROVISIONING_APPLY=1` (or `./scripts/phase3-check.sh` with WireGuard up) exits 0 — **kubectl from your laptop** reaches the cluster over WireGuard (no EICE in phase3 scripts).
 
 **Day-to-day (after Phase 3):** WireGuard on → `kubectl` / `helm` from laptop. Cluster health still via Phase 2: `make check-cluster`.
 
@@ -58,7 +58,7 @@ Phase 3 **depends on** Phase 2. It does **not replace** Phase 2 validation — k
 
 
 
-## Goal (Phase 3**don** — start here)
+## Goal (Phase 3 — done)
 
 Deploy **WireGuard** so your laptop joins the private VPC and uses `kubectl` / `helm` against the Phase 2 API server directly.
 
@@ -106,7 +106,7 @@ Scope:    VPN only — no vLLM, no ingress
 - **Terraform — AWS provider:** `hashicorp/aws` ****`~> 6.60.0` — match Phase 2 pins
 - **Configuration:** WireGuard server bootstrap in `phase3/configuration/` (cloud-init or Ansible) — **not** in Phase 2 Packer AMI
 - **Secrets:** WireGuard keys and client configs **gitignored** — never commit private keys
-- **Kubeconfig:** `~/.kube/vllm-phase2.conf` on laptop; `server:` = node private IP (`https://<ip>:6443`); fetch `admin.conf` via EICE once (break-glass path OK)
+- **Kubeconfig:** `~/.kube/vllm-phase2.conf` on laptop; `server:` = `https://k8scp:6443` with `/etc/hosts` → node private IP; fetch via `make fetch-kubeconfig` (WireGuard hop — no EICE)
 - **Orchestration:** `phase3-check.sh` is the done-when entrypoint; optional `phase3/Makefile` for `check`, `fetch-kubeconfig`, etc.
 - **No vLLM / no ingress** in Phase 3 — access layer only
 
@@ -288,11 +288,11 @@ phase3/
 Define gates **before** Terraform sprawl. Run from laptop (WireGuard connected):
 
 
-| Gate          | Check                                                   | Proves                        |
-| ------------- | ------------------------------------------------------- | ----------------------------- |
-| 1 — VPN       | WireGuard interface up (`wg show`)                      | tunnel works                  |
-| 2 — Cluster   | `kubectl get nodes` **from laptop**                     | kubeconfig over VPN           |
-| 3 — EICE-free | script does not call `ec2-instance-connect open-tunnel` | EICE replaced for routine ops |
+| Gate | Check                                                   | Proves                        |
+| ---- | ------------------------------------------------------- | ----------------------------- |
+| 4 — VPN       | WireGuard interface up (`wg show`)                      | tunnel works                  |
+| 5 — Cluster   | `kubectl get nodes` **from laptop**                     | kubeconfig over VPN           |
+| 6 — EICE-free | phase3 scripts omit `ec2-instance-connect open-tunnel`  | no EICE in phase3 runtime path |
 
 
 **Done when:** `./scripts/phase3-check.sh` exits 0.
@@ -302,6 +302,8 @@ Define gates **before** Terraform sprawl. Run from laptop (WireGuard connected):
 Usage:
 
 ```bash
+make check-vpn              # runtime gates 4–6 (WireGuard connected)
+make check-full RUN_PROVISIONING_APPLY=1   # all gates incl. provisioning apply
 KUBECONFIG=~/.kube/vllm-phase2.conf ./scripts/phase3-check.sh
 ```
 
@@ -336,7 +338,7 @@ KUBECONFIG=~/.kube/vllm-phase2.conf ./scripts/phase3-check.sh
    └── wg show / ping node private IP
 
 6. Kubeconfig
-   ├── Fetch admin.conf via EICE (one-time / break-glass OK)
+   ├── make fetch-kubeconfig (WireGuard SSH hop — no EICE)
    ├── ~/.kube/vllm-phase2.conf
    └── server: https://<node-private-ip>:6443
 
@@ -400,15 +402,15 @@ Fix only what the checks require.
 - [x] **Loop 2:** split tunnel (VPC CIDR only)
 - [x] **Loop 2:** keep EICE break-glass
 - [x] **Loop 2:** Phase 3 owns TF; Phase 2 outputs only
-- [ ] Phase 2 cluster outputs for Phase 3 remote state
-- [ ] WireGuard EC2 + EIP + SGs (Phase 3 TF)
-- [ ] K8s SG ingress: 6443 from WireGuard SG
-- [ ] WireGuard server bootstrap (`configuration/`)
-- [ ] Laptop client config (gitignored)
-- [ ] Kubeconfig on laptop (`~/.kube/vllm-phase2.conf`)
-- [ ] `phase3-check.sh` gates 1–3 green
-- [ ] Regression: `make check-cluster` still green
-- [ ] Document break-glass EICE path in daily navigation (above)
+- [x] Phase 2 cluster outputs for Phase 3 (data sources in `main.network.tf`)
+- [x] WireGuard EC2 + EIP + SGs (Phase 3 TF)
+- [x] K8s SG ingress: 6443 (+ SSH hop for kubeconfig fetch) from WireGuard SG
+- [x] WireGuard server bootstrap (`configuration/wireguard-server-cloud-init.yaml`)
+- [x] Laptop client config (gitignored; `make wireguard-client-config`)
+- [x] Kubeconfig on laptop (`~/.kube/vllm-phase2.conf`) — `make fetch-kubeconfig`
+- [x] `phase3-check.sh` gates 4–6 green (`make check-vpn`)
+- [x] Full ladder green (`make check-full RUN_PROVISIONING_APPLY=1`)
+- [x] Break-glass EICE path documented in daily navigation (above)
 
 ---
 
@@ -422,7 +424,7 @@ Fix only what the checks require.
 - **EICE:** **keep indefinitely** — primary admin path moves to WireGuard; EICE remains break-glass
 - **Terraform:** Phase 3 `vpn/infra/main-account/ca-central-1/prod/` owns WireGuard; Phase 2 cluster live root adds **outputs only**
 - **K8s SG rule:** Phase 3 adds `aws_vpc_security_group_ingress_rule` referencing Phase 2 node SG id
-- **Kubeconfig:** laptop file `~/.kube/vllm-phase2.conf`; server URL = node private IP; one-time fetch via EICE OK
+- **Kubeconfig:** laptop file `~/.kube/vllm-phase2.conf`; `make fetch-kubeconfig` via WireGuard hop (no EICE in phase3 scripts)
 - **Validation:** `phase3-check.sh` from laptop; Phase 2 `make check-cluster` for regression
 - **Scope:** access layer only — no vLLM, no ingress ([Phase 4](../phase4/README.md) next)
 
