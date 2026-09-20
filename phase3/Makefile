@@ -125,6 +125,8 @@ wireguard-server-key:
 		 echo "  ssh -v -i $$SSH_KEY_EXPANDED ubuntu@$$SERVER_EIP"; \
 		 echo "  ssh -i $$SSH_KEY_EXPANDED ubuntu@$$SERVER_EIP sudo journalctl -u cloud-init -n 50"; \
 		 exit 1)
+	@echo ""
+	@echo "Next: make wireguard-client-config"
 
 wireguard-client-config:
 	@SERVER_EIP=$$(cd vpn/infra/main-account/ca-central-1/prod && terraform output -raw wireguard_public_ip 2>/dev/null); \

@@ -1,0 +1,29 @@
+{
+  "$schema": "https://raw.githubusercontent.com/jetify-com/devbox/0.13.7/.schema/devbox.schema.json",
+  "packages": [
+    "pre-commit@4.5.1",
+    "git@2.54.0",
+    "jq@1.8.2",
+    "kubectl@1.36.0",
+    "kubernetes-helm@3.17.1"
+  ],
+  "shell": {
+    "init_hook": [
+      "echo 'phase4 devbox — helm, kubectl, jq' > /dev/null"
+    ],
+    "scripts": {
+      "check": [
+        "make check"
+      ],
+      "check-gates": [
+        "make check-gates"
+      ],
+      "check-chart": [
+        "make check-chart"
+      ],
+      "check-deploy": [
+        "make check-deploy"
+      ]
+    }
+  }
+}

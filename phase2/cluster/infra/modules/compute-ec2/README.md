@@ -36,7 +36,8 @@ module "k8s_node" {
 | subnet_id | ID of the subnet for the EC2 instance. | `string` | n/a | yes |
 | security_group_ids | Security group IDs attached to the instance. | `set(string)` | n/a | yes |
 | key_pair_name | Name of the EC2 key pair. | `string` | n/a | yes |
-| instance_type | EC2 instance type. | `string` | `"t4g.small"` | no |
+| instance_type | EC2 instance type. | `string` | `"t4g.large"` | no |
+| root_volume_size | Root EBS volume size in GiB. | `number` | `30` | no |
 | tags | Tags applied to the EC2 instance (Name should be set by the caller). | `map(string)` | n/a | yes |
 
 ## Outputs

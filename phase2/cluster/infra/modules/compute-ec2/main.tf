@@ -42,7 +42,8 @@ resource "aws_instance" "this" {
   key_name                    = var.key_pair_name
 
   root_block_device {
-    encrypted = true
+    encrypted   = true
+    volume_size = var.root_volume_size
   }
 
   metadata_options {

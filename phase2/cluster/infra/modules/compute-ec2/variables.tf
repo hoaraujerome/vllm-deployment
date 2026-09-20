@@ -25,7 +25,14 @@ variable "key_pair_name" {
 variable "instance_type" {
   description = "EC2 instance type."
   type        = string
-  default     = "t4g.small"
+  default     = "t4g.large"
+  nullable    = false
+}
+
+variable "root_volume_size" {
+  description = "Root EBS volume size in GiB."
+  type        = number
+  default     = 30
   nullable    = false
 }
 

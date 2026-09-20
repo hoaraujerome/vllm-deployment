@@ -1,0 +1,45 @@
+replicaCount: 1
+
+# K8s injects VLLM_PORT/VLLM_SERVICE_* when a Service named like the release
+# exists in the namespace — vLLM treats those as config and crashes.
+enableServiceLinks: false
+
+image:
+  repository: vllm/vllm-openai-cpu
+  tag: latest-arm64
+  pullPolicy: IfNotPresent
+
+model: Qwen/Qwen2.5-0.5B-Instruct
+
+service:
+  type: ClusterIP
+  port: 8000
+
+resources:
+  requests:
+    cpu: 1000m
+    memory: 3Gi
+  limits:
+    cpu: 2000m
+    memory: 6Gi
+
+shmSize: 4Gi
+
+env:
+  VLLM_CPU_KVCACHE_SPACE: "2"
+  # Default 300s is too short for first CPU inference on Graviton2 (RPC execute_model timeout).
+  VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: "900"
+
+extraArgs:
+  - --dtype=float16
+  - --max-model-len=1024
+  - --max-num-seqs=1
+  - --enforce-eager
+
+startupProbe:
+  # CPU cold start + torch compile can exceed 10m on Graviton2; kubelet kills at threshold × period.
+  failureThreshold: 180
+  periodSeconds: 10
+
+readinessProbe:
+  periodSeconds: 10
